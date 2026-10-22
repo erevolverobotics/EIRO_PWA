@@ -1,0 +1,79 @@
+{
+  "name": "EIRO Robotics Competition Platform",
+  "short_name": "EIRO",
+  "description": "Evolve Robotics — Competition Management Platform for EIRO robotics events across India",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#0a0f1e",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icons/icon-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-128x128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/dashboard.png",
+      "type": "image/png",
+      "sizes": "1280x720",
+      "form_factor": "wide",
+      "label": "EIRO Admin Dashboard"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "QR Check-in",
+      "short_name": "Check-in",
+      "description": "Quick team QR check-in",
+      "url": "/venue/checkin",
+      "icons": [{ "src": "/icons/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Score Entry",
+      "short_name": "Score",
+      "description": "Enter competition scores",
+      "url": "/judge",
+      "icons": [{ "src": "/icons/icon-96x96.png", "sizes": "96x96" }]
+    }
+  ],
+  "categories": ["education", "productivity", "sports"],
+  "lang": "en-IN",
+  "dir": "ltr",
+  "prefer_related_applications": false
+}

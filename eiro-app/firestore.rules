@@ -1,0 +1,354 @@
+rules_version = '2';
+// EIRO Robotics Competition Platform — Firestore Security Rules
+// Last updated: 2026-10-21
+// IMPORTANT: Sensitive writes (payments, score locks, qualification, adjustments)
+// must go through trusted Cloud Functions only. These rules enforce read authorization.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper functions ─────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/roleAssignments/$(uid() + '_' + role));
+    }
+
+    function isSuperAdmin() {
+      return hasRole('SUPER_ADMIN');
+    }
+
+    function isDistrictAdmin() {
+      return hasRole('DISTRICT_ADMIN') || isSuperAdmin();
+    }
+
+    function isVenueCoordinator() {
+      return hasRole('VENUE_COORDINATOR') || isDistrictAdmin();
+    }
+
+    function isSchoolCoordinator(schoolId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/roleAssignments/$(uid() + '_SCHOOL_COORDINATOR_' + schoolId));
+    }
+
+    function isJudge() {
+      return hasRole('JUDGE') || hasRole('HEAD_JUDGE') || isDistrictAdmin();
+    }
+
+    function isHeadJudge() {
+      return hasRole('HEAD_JUDGE') || isDistrictAdmin();
+    }
+
+    function isCheckinVolunteer() {
+      return hasRole('CHECKIN_VOLUNTEER') || isVenueCoordinator();
+    }
+
+    // Check role assignment doc directly (more scalable pattern)
+    function hasActiveRoleAssignment(role) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/roleAssignments/$(role + '_' + uid())) &&
+        get(/databases/$(database)/documents/roleAssignments/$(role + '_' + uid())).data.active == true;
+    }
+
+    // ─── Public read collections ──────────────────────────────────────────────
+
+    // Published seasons, categories, rule versions — public read
+    match /seasons/{seasonId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /categories/{categoryCode} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /ruleVersions/{versionId} {
+      allow read: if resource.data.status == 'PUBLISHED' || isDistrictAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    match /districts/{districtId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /venues/{venueId} {
+      allow read: if true;
+      allow write: if isDistrictAdmin();
+    }
+
+    // Published events — public read only for published state
+    match /events/{eventId} {
+      allow read: if resource.data.state == 'PUBLISHED' ||
+                     resource.data.state == 'ACTIVE' ||
+                     resource.data.state == 'COMPLETED' ||
+                     isVenueCoordinator();
+      allow write: if isDistrictAdmin();
+    }
+
+    // Published results — public read only after publication
+    match /results/{resultId} {
+      allow read: if resource.data.publishedAt != null || isDistrictAdmin();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // Certificate public verification — expose minimal fields
+    match /certificates/{certId} {
+      allow read: if resource.data.status == 'ACTIVE'; // public verify by code
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── User profiles ────────────────────────────────────────────────────────
+
+    match /users/{userId} {
+      allow read: if uid() == userId || isSuperAdmin();
+      allow create: if uid() == userId; // self-register
+      allow update: if uid() == userId || isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /roleAssignments/{assignmentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uid == uid() || isDistrictAdmin()
+      );
+      allow write: if isSuperAdmin(); // only super admin assigns roles
+    }
+
+    // ─── Schools ──────────────────────────────────────────────────────────────
+
+    match /schools/{schoolId} {
+      allow read: if isAuthenticated() && (
+        isSchoolCoordinator(schoolId) || isDistrictAdmin()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isSchoolCoordinator(schoolId) || isDistrictAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ─── Students ─────────────────────────────────────────────────────────────
+
+    match /students/{studentId} {
+      allow read: if isAuthenticated() && (
+        // School coordinator can only read own school's students
+        isSchoolCoordinator(resource.data.schoolId) || isDistrictAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        isSchoolCoordinator(request.resource.data.schoolId);
+      allow update: if isSchoolCoordinator(resource.data.schoolId) || isDistrictAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ─── Teams ────────────────────────────────────────────────────────────────
+
+    match /teams/{teamId} {
+      allow read: if isAuthenticated() && (
+        isSchoolCoordinator(resource.data.schoolId) ||
+        isVenueCoordinator() ||
+        isJudge()
+      );
+      allow create: if isAuthenticated() &&
+        isSchoolCoordinator(request.resource.data.schoolId);
+      allow update: if false; // Cloud Functions only for team updates
+      allow delete: if isSuperAdmin();
+    }
+
+    match /teamMemberships/{membershipId} {
+      allow read: if isAuthenticated() && (isVenueCoordinator() || isJudge());
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── Registrations ────────────────────────────────────────────────────────
+
+    match /registrations/{registrationId} {
+      allow read: if isAuthenticated() && (
+        isSchoolCoordinator(resource.data.schoolId) || isDistrictAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        isSchoolCoordinator(request.resource.data.schoolId);
+      allow update: if false; // Cloud Functions only (approve/reject/correction)
+      allow delete: if isSuperAdmin();
+    }
+
+    match /stageEntries/{entryId} {
+      allow read: if isAuthenticated() && (
+        isVenueCoordinator() || isJudge() || isDistrictAdmin()
+      );
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── Attendance ───────────────────────────────────────────────────────────
+
+    match /studentAttendance/{attendanceId} {
+      allow read: if isAuthenticated() && (isVenueCoordinator() || isDistrictAdmin());
+      allow write: if false; // Cloud Functions: recordStudentAttendance
+    }
+
+    match /trainingSessions/{sessionId} {
+      allow read: if isAuthenticated() && (isVenueCoordinator() || isDistrictAdmin());
+      allow write: if isDistrictAdmin();
+    }
+
+    match /trainingAttendance/{attendanceId} {
+      allow read: if isAuthenticated() && (isVenueCoordinator() || isDistrictAdmin());
+      allow write: if false; // Cloud Functions: markTrainingAttendance / correctTrainingAttendance
+    }
+
+    // ─── Scheduling ───────────────────────────────────────────────────────────
+
+    match /timeSlots/{slotId} {
+      allow read: if isAuthenticated();
+      allow write: if isDistrictAdmin();
+    }
+
+    match /slotAssignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Cloud Functions only
+    }
+
+    match /judgeAssignments/{assignmentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uid == uid() || isDistrictAdmin()
+      );
+      allow write: if isDistrictAdmin();
+    }
+
+    // ─── Scoring ──────────────────────────────────────────────────────────────
+
+    // Judges read their own scorecards; head judges/admins read all
+    match /scorecards/{scorecardId} {
+      allow read: if isAuthenticated() && (
+        resource.data.judgeUid == uid() || isHeadJudge()
+      );
+      allow create: if isJudge() &&
+        request.resource.data.judgeUid == uid() &&
+        request.resource.data.status == 'DRAFT';
+      allow update: if false; // Cloud Functions: submitScorecard, verifyAndLockScores
+      allow delete: if false;
+    }
+
+    match /timedRuns/{runId} {
+      allow read: if isAuthenticated() && (isJudge() || isDistrictAdmin());
+      allow write: if false; // Cloud Functions only
+    }
+
+    match /matches/{matchId} {
+      allow read: if isAuthenticated() && (isJudge() || isVenueCoordinator());
+      allow write: if false; // Cloud Functions only (recordMatchBout)
+    }
+
+    match /matchBouts/{boutId} {
+      allow read: if isAuthenticated() && (isJudge() || isDistrictAdmin());
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── Payments (NO gateway — coordinator-verified only) ────────────────────
+
+    match /feeRules/{id} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated() && (
+        isSchoolCoordinator(resource.data.schoolId) || isVenueCoordinator()
+      );
+      allow write: if false; // Cloud Functions only
+    }
+
+    match /payments/{paymentId} {
+      // School coordinators can READ their payment status but NOT write
+      allow read: if isAuthenticated() && (
+        isSchoolCoordinator(resource.data.schoolId) || isVenueCoordinator()
+      );
+      allow write: if false; // ONLY trusted Cloud Functions: recordManualPayment, verifyManualPayment
+    }
+
+    match /paymentAdjustments/{id} {
+      allow read: if isVenueCoordinator();
+      allow write: if false; // Cloud Functions only: voidOrCorrectPayment
+    }
+
+    // ─── Adjustments ──────────────────────────────────────────────────────────
+
+    match /teamAdjustmentRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.requestedBy == uid() || isDistrictAdmin() || isVenueCoordinator()
+      );
+      allow create: if isVenueCoordinator() || isSchoolCoordinator(request.resource.data.schoolId);
+      allow update: if false; // Cloud Functions: approveTeamAdjustment
+      allow delete: if false;
+    }
+
+    match /teamAdjustmentHistory/{historyId} {
+      allow read: if isDistrictAdmin();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── CSV Import ───────────────────────────────────────────────────────────
+
+    match /importJobs/{jobId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uploaderUid == uid() || isDistrictAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        request.resource.data.uploaderUid == uid();
+      allow update: if false; // Cloud Functions only
+      allow delete: if isSuperAdmin();
+    }
+
+    // ─── Qualifications ───────────────────────────────────────────────────────
+
+    match /qualifications/{qualificationId} {
+      allow read: if isAuthenticated() && (
+        isDistrictAdmin() ||
+        isSchoolCoordinator(resource.data.schoolId)
+      );
+      allow write: if false; // Cloud Functions: approveQualifiers
+    }
+
+    // ─── Notifications ────────────────────────────────────────────────────────
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.recipientUid == uid();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─── Audit Logs (immutable — no client writes ever) ───────────────────────
+
+    match /auditLogs/{logId} {
+      allow read: if isDistrictAdmin();
+      allow write: if false; // NEVER allow client writes to audit logs
+    }
+
+    // ─── Config (admin-only writes) ───────────────────────────────────────────
+
+    match /config/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /seasonCategories/{id} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /arenas/{arenaId} {
+      allow read: if isAuthenticated();
+      allow write: if isDistrictAdmin();
+    }
+
+    // Deny everything else by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
