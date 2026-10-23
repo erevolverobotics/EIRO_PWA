@@ -37,8 +37,8 @@ export default function SignupPage() {
     setLoading(true);
     try {
       await signUp(form.email, form.password, form.name);
-      toast.success('Account created! Please complete your school profile.');
-      router.push('/coordinator');
+      toast.success('Account created! Welcome to EIRO.');
+      router.replace('/coordinator');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Registration failed';
       if (msg.includes('email-already-in-use')) setError('This email is already registered. Please sign in.');

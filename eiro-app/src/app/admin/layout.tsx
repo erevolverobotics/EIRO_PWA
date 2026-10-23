@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
@@ -9,6 +9,7 @@ import {
   Shuffle, History, Upload, CreditCard, UserCheck, Zap
 } from 'lucide-react';
 import { usePathname } from 'next/navigation';
+import { RouteGuard } from '@/components/layout/RouteGuard';
 
 const ADMIN_NAV: NavItem[] = [
   { label: 'Overview', href: '/admin', icon: LayoutDashboard },
@@ -41,20 +42,22 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
-      <Sidebar
-        items={ADMIN_NAV}
-        roleLabel="Super Admin"
-        roleColor="text-red-400"
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {children}
-        </main>
+    <RouteGuard allowedRoles={['SUPER_ADMIN', 'DISTRICT_ADMIN']}>
+      <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
+        <Sidebar
+          items={ADMIN_NAV}
+          roleLabel="Super Admin"
+          roleColor="text-red-400"
+          open={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </RouteGuard>
   );
 }

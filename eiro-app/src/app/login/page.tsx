@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Bot, Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react';
@@ -11,19 +11,38 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [formLoading, setFormLoading] = useState(false);
   const [error, setError] = useState('');
-  const { signIn } = useAuth();
+  const { signIn, user, loading: authLoading } = useAuth();
   const router = useRouter();
+
+  // Redirect already-authenticated users to their dashboard
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.replace('/dashboard');
+    }
+  }, [user, authLoading, router]);
+
+  // Show spinner while Firebase resolves auth state
+  if (authLoading) {
+    return (
+      <div className="min-h-screen animated-bg flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
+      </div>
+    );
+  }
+
+  // Already logged in — redirect firing
+  if (user) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
+    setFormLoading(true);
     try {
       await signIn(email, password);
       toast.success('Welcome back!');
-      router.push('/dashboard');
+      router.replace('/dashboard');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to sign in';
       if (msg.includes('invalid-credential') || msg.includes('wrong-password') || msg.includes('user-not-found')) {
@@ -34,7 +53,7 @@ export default function LoginPage() {
         setError(msg);
       }
     } finally {
-      setLoading(false);
+      setFormLoading(false);
     }
   };
 
@@ -127,11 +146,11 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={formLoading}
               id="sign-in-btn"
               className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all duration-200 flex items-center justify-center gap-2"
             >
-              {loading ? (
+              {formLoading ? (
                 <><Loader2 className="w-4 h-4 animate-spin" /> Signing in...</>
               ) : (
                 'Sign In'
@@ -139,26 +158,6 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Demo role quick-login */}
-          <div className="mt-6 p-4 rounded-xl bg-white/[0.03] border border-white/5">
-            <p className="text-xs text-gray-500 mb-3 font-medium">Demo — Quick Role Access</p>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { label: 'Admin', href: '/admin' },
-                { label: 'Coordinator', href: '/coordinator' },
-                { label: 'Judge', href: '/judge' },
-                { label: 'Venue Staff', href: '/venue' },
-              ].map((r) => (
-                <Link
-                  key={r.label}
-                  href={r.href}
-                  className="text-center py-2 px-3 rounded-lg text-xs font-medium glass border border-white/10 hover:border-indigo-500/30 text-gray-400 hover:text-indigo-400 transition-all duration-200"
-                >
-                  {r.label}
-                </Link>
-              ))}
-            </div>
-          </div>
 
           <p className="text-center text-sm text-gray-500 mt-6">
             New school?{' '}

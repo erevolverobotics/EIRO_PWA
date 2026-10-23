@@ -110,17 +110,26 @@ service cloud.firestore {
     // ─── User profiles ────────────────────────────────────────────────────────
 
     match /users/{userId} {
-      allow read: if uid() == userId || isSuperAdmin();
-      allow create: if uid() == userId; // self-register
+      allow get:    if uid() == userId || isSuperAdmin();
+      allow list:   if isSuperAdmin();             // admin staff page
+      allow create: if uid() == userId;            // self-register
       allow update: if uid() == userId || isSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
     match /roleAssignments/{assignmentId} {
-      allow read: if isAuthenticated() && (
-        resource.data.uid == uid() || isDistrictAdmin()
+      allow get:  if isAuthenticated() && (
+        resource == null || resource.data.uid == uid() || isDistrictAdmin()
       );
-      allow write: if isSuperAdmin(); // only super admin assigns roles
+      allow list: if isSuperAdmin();               // admin staff page: load all assignments
+      // Super admin can write any role
+      allow write: if isSuperAdmin();
+      // New users may self-assign SCHOOL_COORDINATOR only (default role on signup)
+      allow create: if isAuthenticated()
+        && assignmentId == uid() + '_SCHOOL_COORDINATOR'
+        && request.resource.data.uid == uid()
+        && request.resource.data.role == 'SCHOOL_COORDINATOR'
+        && request.resource.data.active == true;
     }
 
     // ─── Schools ──────────────────────────────────────────────────────────────
