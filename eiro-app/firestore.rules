@@ -78,12 +78,14 @@ service cloud.firestore {
 
     match /districts/{districtId} {
       allow read: if true;
-      allow write: if isSuperAdmin();
+      // District admins can edit their own district (e.g., add venues)
+      allow write: if isDistrictAdmin() || isSuperAdmin();
     }
 
     match /venues/{venueId} {
       allow read: if true;
-      allow write: if isDistrictAdmin();
+      // Super admin can also manage venues
+      allow write: if isDistrictAdmin() || isSuperAdmin();
     }
 
     // Published events — public read only for published state
@@ -162,11 +164,17 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         isSchoolCoordinator(resource.data.schoolId) ||
         isVenueCoordinator() ||
-        isJudge()
+        isJudge() ||
+        isDistrictAdmin() ||
+        isSuperAdmin()
       );
-      allow create: if isAuthenticated() &&
-        isSchoolCoordinator(request.resource.data.schoolId);
-      allow update: if false; // Cloud Functions only for team updates
+      // District admins (or super admins) can also create teams for any school they manage
+      allow create: if isAuthenticated() && (
+        isSchoolCoordinator(request.resource.data.schoolId) ||
+        isDistrictAdmin()
+      );
+      // Allow updates by district admins or super admins (cloud functions still can do it too)
+      allow update: if isDistrictAdmin() || isSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
@@ -355,9 +363,9 @@ service cloud.firestore {
       allow write: if isDistrictAdmin();
     }
 
-    // Deny everything else by default 
+    // Super admin full fallback
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if isSuperAdmin();
     }
   }
 }
