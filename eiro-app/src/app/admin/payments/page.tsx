@@ -41,7 +41,7 @@ interface Payment {
   verifiedAt: string;
 }
 
-const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'BANK_TRANSFER', 'DD'];
+const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER'];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -243,7 +243,7 @@ export default function PaymentsPage() {
                             <div className="text-xs text-green-400">Paid: ₹{(p.paidAmount / 100).toLocaleString('en-IN')}</div>
                           ) : null}
                         </td>
-                        <td><StatusBadge state={p.status as any} /></td>
+                        <td><StatusBadge status={p.status} /></td>
                         <td>
                           <Button size="sm" icon={CheckCircle2} onClick={() => {
                             setVerifyModal(p);

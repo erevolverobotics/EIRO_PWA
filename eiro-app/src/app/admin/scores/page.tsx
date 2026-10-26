@@ -179,7 +179,7 @@ export default function ScoreVerificationPage() {
                     <td><span className="text-xs text-gray-400">{sc.type}</span></td>
                     <td><span className="font-mono text-sm font-bold text-white">{String(sc.score)}</span></td>
                     <td><span className="text-xs text-gray-400">{sc.judgeName || sc.judgeUid}</span></td>
-                    <td><StatusBadge state={sc.status as any} /></td>
+                    <td><StatusBadge status={sc.status} /></td>
                     <td>
                       <div className="flex gap-1">
                         <button onClick={() => setSelected(sc)}

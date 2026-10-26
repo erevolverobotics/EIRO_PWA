@@ -193,8 +193,8 @@ export default function SchoolApprovalsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="font-semibold text-white">{t.name}</span>
-                    <CategoryBadge category={t.category} />
-                    <StatusBadge state={t.state} />
+                    <CategoryBadge code={t.category} />
+                    <StatusBadge status={t.state} />
                   </div>
                   <p className="text-xs text-gray-500">
                     {t.schoolName} {t.schoolCode ? `(${t.schoolCode})` : ''} · {t.members} members
@@ -255,7 +255,7 @@ export default function SchoolApprovalsPage() {
             <p><span className="text-gray-500">School:</span> {selectedTeam.schoolName}</p>
             <p><span className="text-gray-500">Category:</span> {selectedTeam.category}</p>
             <p><span className="text-gray-500">Members:</span> {selectedTeam.members}</p>
-            <p><span className="text-gray-500">Status:</span> <StatusBadge state={selectedTeam.state} /></p>
+            <p><span className="text-gray-500">Status:</span> <StatusBadge status={selectedTeam.state} /></p>
             <p><span className="text-gray-500">Fee:</span> {selectedTeam.feeStatus}</p>
 
             {actionType === 'correction' && (
