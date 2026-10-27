@@ -1,153 +1,151 @@
 'use client';
 
-import { useState } from 'react';
-import { PageHeader, Card, Button, Badge, StatusBadge, CategoryBadge, KpiCard } from '@/components/ui';
-import { BarChart3, Trophy, ChevronUp, ChevronDown, Lock, CheckCircle2, Info } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { PageHeader, Card, Button, Badge, CategoryBadge, KpiCard } from '@/components/ui';
+import { BarChart3, Trophy, CheckCircle2, Info, Loader2, RefreshCw } from 'lucide-react';
+import { getAll } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import type { CategoryCode } from '@/lib/types';
 
-const RANKINGS: { category: CategoryCode; teams: { rank: number; code: string; name: string; school: string; score: number; qualified: boolean }[] }[] = [
-  {
-    category: 'SUMO',
-    teams: [
-      { rank: 1, code: 'EIRO-2026-041', name: 'Robo Warriors', school: 'DAV Public', score: 98, qualified: true },
-      { rank: 2, code: 'EIRO-2026-055', name: 'Iron Crushers', school: 'St. Josephs', score: 95, qualified: true },
-      { rank: 3, code: 'EIRO-2026-062', name: 'Metal Beasts', school: 'KV No.1', score: 87, qualified: false },
-    ],
-  },
-  {
-    category: 'MAZE',
-    teams: [
-      { rank: 1, code: 'EIRO-2026-043', name: 'Maze Masters', school: 'Asan Memorial', score: 120450, qualified: true },
-      { rank: 2, code: 'EIRO-2026-071', name: 'Speed Navigators', school: 'PSBB', score: 134200, qualified: true },
-    ],
-  },
-  {
-    category: 'ECO_CITY',
-    teams: [
-      { rank: 1, code: 'EIRO-2026-042', name: 'Eco Rangers', school: 'DAV Public', score: 88, qualified: true },
-      { rank: 2, code: 'EIRO-2026-077', name: 'Green Minds', school: 'Hindustan Matric', score: 82, qualified: false },
-    ],
-  },
-];
-
-const RANK_ICON = (rank: number) => {
-  if (rank === 1) return '🥇';
-  if (rank === 2) return '🥈';
-  if (rank === 3) return '🥉';
-  return `#${rank}`;
-};
+interface ResultRecord {
+  id: string;
+  eventId?: string;
+  entryId?: string;
+  rank?: number;
+  scoreSnapshot?: unknown;
+  status?: string;
+}
+interface Qualification {
+  id: string;
+  eventId?: string;
+  sourceEntryId?: string;
+  finalsEntryId?: string;
+  status?: string;
+}
+interface Event { id: string; categoryCode?: string; name?: string }
+interface Entry { id: string; teamId?: string }
+interface Team { id: string; teamName?: string; displayTeamCode?: string; schoolId?: string; categoryCode?: string }
+interface School { id: string; name?: string }
 
 export default function RankingsPage() {
-  const [selectedCat, setSelectedCat] = useState<CategoryCode | 'ALL'>('ALL');
-  const [approveOpen, setApproveOpen] = useState(false);
+  const [results, setResults] = useState<ResultRecord[]>([]);
+  const [qualifications, setQualifications] = useState<Qualification[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [schools, setSchools] = useState<School[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyEvent, setBusyEvent] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [selectedCat, setSelectedCat] = useState('ALL');
 
-  const filtered = selectedCat === 'ALL' ? RANKINGS : RANKINGS.filter(r => r.category === selectedCat);
-  const totalQualified = RANKINGS.flatMap(r => r.teams).filter(t => t.qualified).length;
+  const load = useCallback(async () => {
+    try {
+      const [resultData, qualificationData, eventData, entryData, teamData, schoolData] = await Promise.all([
+        getAll<ResultRecord>('results'), getAll<Qualification>('qualifications'),
+        getAll<Event>('events'), getAll<Entry>('stageEntries'),
+        getAll<Team>('teams'), getAll<School>('schools'),
+      ]);
+      setResults(resultData);
+      setQualifications(qualificationData);
+      setEvents(eventData);
+      setEntries(entryData);
+      setTeams(teamData);
+      setSchools(schoolData);
+    } catch (e) {
+      console.error(e);
+      setError('Could not load results and qualification data. Check your access and try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { void Promise.resolve().then(load); }, [load]);
+  const refresh = () => { setLoading(true); setError(''); void load(); };
+
+  const resultTeam = useCallback((result: ResultRecord) => {
+    const teamId = entries.find(entry => entry.id === result.entryId)?.teamId;
+    return teams.find(team => team.id === teamId);
+  }, [entries, teams]);
+  const grouped = useMemo(() => {
+    const groups = new Map<string, ResultRecord[]>();
+    results.forEach(result => {
+      const team = resultTeam(result);
+      const event = events.find(item => item.id === result.eventId);
+      const category = event?.categoryCode || team?.categoryCode || 'UNASSIGNED';
+      groups.set(category, [...(groups.get(category) || []), result]);
+    });
+    return [...groups.entries()].map(([category, values]) => [category, values.sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER))] as const);
+  }, [results, events, resultTeam]);
+  const filtered = selectedCat === 'ALL' ? grouped : grouped.filter(([category]) => category === selectedCat);
+  const approvedQualificationCount = qualifications.filter(item => item.status === 'APPROVED' || Boolean(item.finalsEntryId)).length;
+  const pendingSourceEventIds = [...new Set(results
+    .filter(result => result.eventId && qualifications.some(item => item.sourceEntryId === result.entryId && item.status === 'PENDING'))
+    .map(result => result.eventId as string))];
+
+  const approve = async (eventId: string) => {
+    setBusyEvent(eventId);
+    setError('');
+    setMessage('');
+    try {
+      await callEiroFunction<{ eventId: string }, unknown>('approveQualifiers', { eventId });
+      setMessage(`Qualifier approval submitted for event ${eventId}.`);
+      setLoading(true);
+      await load();
+    } catch (e) {
+      console.error(e);
+      setError(`Qualifier approval for ${eventId} was not completed. The callable may be unavailable or the event may not be eligible.`);
+    } finally {
+      setBusyEvent('');
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Rankings & Qualification"
-        subtitle="A11 — District results, tie-breakers and finals qualification"
-        actions={
-          <>
-            <Button variant="secondary" size="sm" icon={BarChart3}>Compute Rankings</Button>
-            <Button size="sm" icon={CheckCircle2} onClick={() => setApproveOpen(true)}>
-              Approve Qualifiers ({totalQualified})
-            </Button>
-          </>
-        }
-      />
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <KpiCard title="Categories Scored" value={RANKINGS.length} icon={Trophy} color="indigo" />
-        <KpiCard title="Total Teams Ranked" value={RANKINGS.flatMap(r => r.teams).length} icon={BarChart3} color="blue" />
-        <KpiCard title="Qualified for Finals" value={totalQualified} icon={CheckCircle2} color="green" />
-        <KpiCard title="Pending Lock" value={1} icon={Lock} color="orange" />
+      <PageHeader title="Rankings & Qualification" subtitle="Stored result ranks and qualification records"
+        actions={<Button variant="secondary" size="sm" icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh</Button>} />
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        <KpiCard title="Categories" value={grouped.length} icon={Trophy} color="indigo" />
+        <KpiCard title="Ranked Result Records" value={results.length} icon={BarChart3} color="blue" />
+        <KpiCard title="Approved Qualification Records" value={approvedQualificationCount} icon={CheckCircle2} color="green" />
       </div>
-
       <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex items-start gap-3">
         <Info className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-        <p className="text-xs text-yellow-400">
-          Rankings are computed from locked and verified scores using the published rule version for each category.
-          Qualifying quotas per district/category must be configured before approval.
-          Preliminary scores are NOT automatically carried into State Finals.
-        </p>
+        <p className="text-xs text-yellow-400">Ranks and qualification decisions are read from stored records. This screen does not calculate scores, reorder teams, lock results, or infer qualifying quotas; the trusted function validates qualifier approval.</p>
       </div>
-
-      {/* Category filter */}
-      <div className="flex gap-2 flex-wrap">
-        {['ALL', ...RANKINGS.map(r => r.category)].map(cat => (
-          <button key={cat} onClick={() => setSelectedCat(cat as CategoryCode | 'ALL')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200 border ${
-              selectedCat === cat ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white/5 border-white/10 text-gray-400 hover:border-indigo-500/40 hover:text-white'
-            }`}>
-            {cat}
-          </button>
-        ))}
-      </div>
-
-      {/* Rankings per category */}
-      {filtered.map(catRankings => (
-        <Card key={catRankings.category} padding="none">
-          <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
-            <CategoryBadge code={catRankings.category} />
-            <div className="flex items-center gap-2">
-              <StatusBadge status="LOCKED" />
-              <Button size="sm" variant="secondary" icon={Lock} className="hidden sm:flex">Lock Results</Button>
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {message && <p role="status" className="text-sm text-green-400">{message}</p>}
+      {loading ? <div className="flex justify-center py-12"><Loader2 className="w-7 h-7 animate-spin text-indigo-400" /></div> :
+        results.length === 0 ? <Card className="text-center text-gray-400">No result records found.</Card> : <>
+          <div className="flex gap-2 flex-wrap">
+            {['ALL', ...grouped.map(([category]) => category)].map(category => <button key={category} onClick={() => setSelectedCat(category)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium border ${selectedCat === category ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'}`}>{category}</button>)}
+          </div>
+          {filtered.map(([category, categoryRows]) => {
+            const categoryEvents = new Set(categoryRows.map(result => result.eventId).filter((eventId): eventId is string => Boolean(eventId)));
+            const categoryPendingEvents = pendingSourceEventIds.filter(eventId => categoryEvents.has(eventId));
+            return <Card key={category} padding="none">
+            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between gap-3">
+              {category === 'UNASSIGNED' ? <Badge>Unassigned category</Badge> : <CategoryBadge code={category as CategoryCode} />}
+              <div className="flex items-center gap-2">
+                {categoryPendingEvents.map(eventId => <Button key={eventId} size="sm" icon={CheckCircle2} loading={busyEvent === eventId} disabled={Boolean(busyEvent)} onClick={() => void approve(eventId)}>Approve qualifiers · {eventId}</Button>)}
+              </div>
             </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="eiro-table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Team</th>
-                  <th>Score</th>
-                  <th>Qualified</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {catRankings.teams.map(team => (
-                  <tr key={team.code} className={team.qualified ? 'bg-green-500/[0.03]' : ''}>
-                    <td>
-                      <span className="text-lg">{RANK_ICON(team.rank)}</span>
-                    </td>
-                    <td>
-                      <div className="font-medium text-white text-sm">{team.name}</div>
-                      <div className="text-xs text-gray-500">{team.school}</div>
-                      <div className="font-mono text-[10px] text-gray-600">{team.code}</div>
-                    </td>
-                    <td>
-                      <span className="font-bold text-white font-mono">
-                        {catRankings.category === 'MAZE' ? `${(team.score / 1000).toFixed(3)}s` : `${team.score}/100`}
-                      </span>
-                    </td>
-                    <td>
-                      {team.qualified ? (
-                        <Badge variant="success">✓ Qualified</Badge>
-                      ) : (
-                        <Badge variant="default">Not Qualified</Badge>
-                      )}
-                    </td>
-                    <td>
-                      <div className="flex gap-1">
-                        <button className="p-1.5 rounded-lg text-green-400 hover:bg-green-500/10 transition-colors" title="Move up">
-                          <ChevronUp className="w-3 h-3" />
-                        </button>
-                        <button className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/10 transition-colors" title="Move down">
-                          <ChevronDown className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      ))}
+            <div className="overflow-x-auto"><table className="eiro-table"><thead><tr><th>Rank</th><th>Team</th><th>Score Snapshot</th><th>Qualification</th></tr></thead>
+              <tbody>{categoryRows.map(result => {
+                const team = resultTeam(result);
+                const school = schools.find(item => item.id === team?.schoolId);
+                const qualification = qualifications.find(item => item.sourceEntryId === result.entryId);
+                return <tr key={result.id}>
+                  <td><span className="text-lg">{result.rank ?? '—'}</span></td>
+                  <td><div className="font-medium text-white text-sm">{team?.teamName || result.entryId || 'Team details unavailable'}</div><div className="text-xs text-gray-500">{school?.name || school?.id || '—'}</div><div className="font-mono text-[10px] text-gray-600">{team?.displayTeamCode || result.entryId || result.id}</div></td>
+                  <td className="font-mono text-xs text-gray-300">{result.scoreSnapshot === undefined ? '—' : JSON.stringify(result.scoreSnapshot)}</td>
+                  <td><Badge variant={qualification?.status === 'APPROVED' || qualification?.finalsEntryId ? 'success' : qualification?.status === 'PENDING' ? 'warning' : 'default'}>{qualification?.status || (qualification?.finalsEntryId ? 'FINALS ENTRY CREATED' : 'No qualification record')}</Badge></td>
+                </tr>;
+              })}</tbody></table></div>
+          </Card>;
+          })}
+        </>}
     </div>
   );
 }

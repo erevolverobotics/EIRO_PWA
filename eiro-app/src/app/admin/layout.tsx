@@ -17,6 +17,7 @@ const ADMIN_NAV: NavItem[] = [
   { label: 'Categories & Rules', href: '/admin/categories', icon: Settings },
   { label: 'Districts & Venues', href: '/admin/districts', icon: MapPin },
   { label: 'Schools & Approvals', href: '/admin/schools', icon: School, badge: 3 },
+  { label: 'School Applications', href: '/admin/school-applications', icon: ClipboardList },
   { label: 'Staff & Judges', href: '/admin/staff', icon: Users },
   { label: 'Schedule Builder', href: '/admin/schedule', icon: Calendar },
   { label: 'Live Operations', href: '/admin/live', icon: Zap },

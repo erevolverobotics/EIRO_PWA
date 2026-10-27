@@ -53,6 +53,7 @@ export default function StaffPage() {
 
   const [rows, setRows]             = useState<UserRow[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState('');
   const [search, setSearch]         = useState('');
   const [saving, setSaving]         = useState(false);
   const [revoking, setRevoking]     = useState<string | null>(null);
@@ -92,15 +93,20 @@ export default function StaffPage() {
 
       built.sort((a, b) => a.profile.displayName.localeCompare(b.profile.displayName));
       setRows(built);
+      setError('');
     } catch (e) {
       console.error(e);
+      setError('User and role data could not be loaded. Super administrator authorization may be required; retry after checking permissions.');
       toast.error('Failed to load users. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   // ── Open edit modal ─────────────────────────────────────────────────────────
 
@@ -128,6 +134,7 @@ export default function StaffPage() {
 
       // Use setDoc — ID matches the rules pattern: {uid}_{role}
       await setDoc(doc(db, 'roleAssignments', docId), {
+        id:        docId,
         uid:       editTarget.profile.uid,
         role:      newRole,
         scopeType: roleInfo.scopeType,
@@ -189,7 +196,7 @@ export default function StaffPage() {
     <div className="space-y-6 animate-fade-in-up">
       <PageHeader
         title="Users & Role Management"
-        subtitle={`${rows.length} registered users — assign and manage roles`}
+        subtitle={error ? 'User and role data unavailable' : `${rows.length} registered users — assign and manage roles`}
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={load} disabled={loading}>
             Refresh
@@ -199,10 +206,10 @@ export default function StaffPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <KpiCard title="Total Users"  value={rows.length}  icon={Users}       color="indigo" />
-        <KpiCard title="With Role"    value={withRole}     icon={ShieldCheck} color="green"  />
-        <KpiCard title="No Role Yet"  value={noRole}       icon={Users}       color="orange" />
-        <KpiCard title="Judges"       value={judgeCount}   icon={Shield}      color="purple" />
+        <KpiCard title="Total Users"  value={error || loading ? '—' : rows.length}  icon={Users}       color="indigo" />
+        <KpiCard title="With Role"    value={error || loading ? '—' : withRole}     icon={ShieldCheck} color="green"  />
+        <KpiCard title="No Role Yet"  value={error || loading ? '—' : noRole}       icon={Users}       color="orange" />
+        <KpiCard title="Judges"       value={error || loading ? '—' : judgeCount}   icon={Shield}      color="purple" />
       </div>
 
       {/* Search */}
@@ -225,6 +232,11 @@ export default function StaffPage() {
           <div className="flex items-center justify-center gap-3 py-16 text-gray-500">
             <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
             Loading users…
+          </div>
+        ) : error ? (
+          <div role="alert" className="p-5 text-sm text-red-300">
+            <p>{error}</p>
+            <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-gray-500">

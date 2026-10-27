@@ -10,8 +10,8 @@ import {
   sendPasswordResetEmail,
   updateProfile,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase/config';
+import { doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { auth, db, assertFirebaseConfigured, firebaseConfigured } from '@/lib/firebase/config';
 import { UserRole, UserProfile, RoleAssignment } from '@/lib/types';
 
 interface AuthContextType {
@@ -19,6 +19,7 @@ interface AuthContextType {
   profile: UserProfile | null;
   roles: RoleAssignment[];
   loading: boolean;
+  authError: string | null;
   primaryRole: UserRole | null;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
@@ -33,17 +34,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [roles, setRoles] = useState<RoleAssignment[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(firebaseConfigured);
+  const [authError, setAuthError] = useState<string | null>(
+    firebaseConfigured ? null : 'Firebase is not configured. Add the required NEXT_PUBLIC_FIREBASE_* values to .env.local.'
+  );
 
   useEffect(() => {
+    if (!firebaseConfigured) return;
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setLoading(true);
+      setAuthError(null);
       setUser(firebaseUser);
       if (firebaseUser) {
         try {
+          setProfile(null);
+          setRoles([]);
           // Fetch user profile
           const profileDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (profileDoc.exists()) {
             setProfile(profileDoc.data() as UserProfile);
+          } else {
+            setAuthError('Your user profile is missing. Contact an administrator.');
           }
           // Load roles via individual getDoc calls (not a list query).
           // Use allSettled so a permission-denied on a non-existent role doc
@@ -65,16 +76,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 return { id: snap.id, ...snap.data() } as RoleAssignment;
               })
           );
-        } catch {
-          // Firebase not configured yet – run in demo mode
-          setProfile({
-            uid: firebaseUser.uid,
-            displayName: firebaseUser.displayName || 'User',
-            email: firebaseUser.email || '',
-            state: 'ACTIVE',
-            createdAt: null,
-            updatedAt: null,
-          });
+        } catch (error) {
+          console.error('Failed to load authenticated user data', error);
+          setProfile(null);
+          setRoles([]);
+          setAuthError('Your account data could not be loaded. Check your connection and try again.');
         }
       } else {
         setProfile(null);
@@ -86,10 +92,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
+    assertFirebaseConfigured();
     await signInWithEmailAndPassword(auth, email, password);
   };
 
   const signUp = async (email: string, password: string, displayName: string) => {
+    assertFirebaseConfigured();
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(credential.user, { displayName });
 
@@ -124,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // onAuthStateChanged already fired (when createUserWithEmailAndPassword completed)
     // BEFORE the batch write finished, so roles = []. Fix: inject state directly now.
     setUser(credential.user);
+    setAuthError(null);
     setProfile({
       uid,
       displayName,
@@ -150,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const resetPassword = async (email: string) => {
+    assertFirebaseConfigured();
     await sendPasswordResetEmail(auth, email);
   };
 
@@ -171,7 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     : null;
 
   return (
-    <AuthContext.Provider value={{ user, profile, roles, loading, primaryRole, signIn, signUp, signOut, resetPassword, hasRole }}>
+    <AuthContext.Provider value={{ user, profile, roles, loading, authError, primaryRole, signIn, signUp, signOut, resetPassword, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

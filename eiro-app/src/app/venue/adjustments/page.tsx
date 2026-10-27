@@ -1,140 +1,75 @@
 'use client';
 
-import { useState } from 'react';
-import { PageHeader, Card, Button, Badge, StatusBadge, CategoryBadge, Modal, Textarea } from '@/components/ui';
-import { Shuffle, CheckCircle2, XCircle, AlertCircle, Info } from 'lucide-react';
-import type { CategoryCode } from '@/lib/types';
+import { useCallback, useEffect, useState } from 'react';
+import { PageHeader, Card, Button, Badge } from '@/components/ui';
+import { AlertCircle, Shuffle } from 'lucide-react';
+import { getAll } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
-const PENDING_REQUESTS = [
-  {
-    id: 'ADJ-V001',
-    type: 'MERGE_TEAMS',
-    category: 'SUMO' as CategoryCode,
-    source: { code: 'EIRO-2026-043', name: 'Metal Beasts', school: 'KV No.1', present: 1, total: 2 },
-    target: { code: 'EIRO-2026-041', name: 'Robo Warriors', school: 'DAV Public', present: 2, total: 2 },
-    students: ['Rahul Sharma'],
-    reason: 'One member absent. Team cannot compete alone. Requesting merge.',
-    requestedBy: 'Venue Coord. Lakshmi',
-    requestedAt: '09:15 AM',
-    warnings: ['Cross-school merge — needs explicit approval', 'Robo Warriors will have 3 members after merge'],
-  },
-];
+type Entry = { id: string; teamId: string; eventId: string; entryStatus: string; mergedIntoEntryId?: string };
+type Team = { id: string; teamName: string; displayTeamCode: string };
+type Adjustment = { id: string; type?: string; status?: string; sourceEntryId?: string; targetEntryId?: string; studentIds?: string[]; reason?: string; createdAt?: { toDate?: () => Date } | string };
 
 export default function VenueAdjustmentsPage() {
-  const [selected, setSelected] = useState<typeof PENDING_REQUESTS[0] | null>(null);
-  const [actionType, setActionType] = useState<'approve' | 'reject'>('approve');
-  const [notes, setNotes] = useState('');
-
-  const handleAction = () => {
-    if (actionType === 'approve') {
-      toast.success(`${selected?.id} approved and applied atomically`);
-    } else {
-      toast.error(`${selected?.id} rejected`);
-    }
-    setSelected(null);
-    setNotes('');
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [requests, setRequests] = useState<Adjustment[]>([]);
+  const [sourceEntryId, setSourceEntryId] = useState('');
+  const [targetEntryId, setTargetEntryId] = useState('');
+  const [studentIds, setStudentIds] = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const load = useCallback(() => {
+    Promise.all([getAll<Entry>('stageEntries'), getAll<Team>('teams'), getAll<Adjustment>('teamAdjustmentRequests')])
+      .then(([entryRows, teamRows, requestRows]) => { setEntries(entryRows.filter(entry => !entry.mergedIntoEntryId)); setTeams(teamRows); setRequests(requestRows); })
+      .catch(() => setError('Adjustment requests could not be loaded.'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const teamName = (entryId: string) => {
+    const entry = entries.find(item => item.id === entryId);
+    return teams.find(team => team.id === entry?.teamId)?.teamName ?? entry?.teamId ?? entryId;
   };
-
-  return (
-    <div className="space-y-6 animate-fade-in-up">
-      <PageHeader title="Merge / Transfer" subtitle="V14 — On-site team adjustment approvals" />
-
-      <div className="p-4 rounded-2xl bg-red-900/20 border border-red-500/20 flex items-start gap-3">
-        <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-        <div className="text-xs text-red-400 space-y-1">
-          <p><strong>On-site adjustments only.</strong> These are emergency operations for competition day. Cross-school merges require super admin confirmation.</p>
-          <p>Approval is atomic — both rosters are updated simultaneously. A before/after snapshot is logged permanently.</p>
+  const submit = async () => {
+    if (!sourceEntryId || !targetEntryId || sourceEntryId === targetEntryId || !studentIds.trim() || !reason.trim()) {
+      toast.error('Select two different entries, at least one student, and provide a reason.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await callEiroFunction<Record<string, unknown>, unknown>('requestTeamAdjustment', {
+        type: 'TRANSFER_MEMBERS',
+        sourceEntryId,
+        targetEntryId,
+        studentIds: studentIds.split(',').map(id => id.trim()).filter(Boolean),
+        reason: reason.trim(),
+      });
+      toast.success('Adjustment request sent for review.');
+      setSourceEntryId(''); setTargetEntryId(''); setStudentIds(''); setReason('');
+      load();
+    } catch {
+      toast.error('The adjustment request was not accepted.');
+    } finally { setSaving(false); }
+  };
+  return <div className="space-y-6 animate-fade-in-up">
+    <PageHeader title="Team Adjustments" subtitle="Submit venue adjustment requests for authorized review" />
+    <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex gap-3 text-xs text-yellow-300"><AlertCircle className="w-4 h-4 shrink-0" /><span>Requests are not applied here. Approval and roster changes require an authorized backend workflow; this page does not simulate approval.</span></div>
+    <Card>
+      <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><Shuffle className="w-4 h-4 text-purple-400" />Request member transfer</h3>
+      {entries.length === 0 ? <p className="text-sm text-gray-400">No active stage entries are available for a request.</p> : <>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="text-sm text-gray-400">Source entry<select className="eiro-input mt-1" value={sourceEntryId} onChange={event => setSourceEntryId(event.target.value)}><option value="">Select source</option>{entries.map(entry => <option key={entry.id} value={entry.id}>{teamName(entry.id)}</option>)}</select></label>
+          <label className="text-sm text-gray-400">Target entry<select className="eiro-input mt-1" value={targetEntryId} onChange={event => setTargetEntryId(event.target.value)}><option value="">Select target</option>{entries.map(entry => <option key={entry.id} value={entry.id}>{teamName(entry.id)}</option>)}</select></label>
+          <label className="text-sm text-gray-400 sm:col-span-2">Student IDs (comma-separated)<input className="eiro-input mt-1" value={studentIds} onChange={event => setStudentIds(event.target.value)} placeholder="IDs to transfer" /></label>
+          <label className="text-sm text-gray-400 sm:col-span-2">Request reason<textarea className="eiro-input mt-1" rows={3} value={reason} onChange={event => setReason(event.target.value)} /></label>
         </div>
-      </div>
-
-      {PENDING_REQUESTS.length === 0 ? (
-        <Card className="text-center py-16">
-          <CheckCircle2 className="w-10 h-10 text-green-400 mx-auto mb-3" />
-          <p className="text-gray-400 font-medium">No pending adjustment requests</p>
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {PENDING_REQUESTS.map(req => (
-            <Card key={req.id} className="border-orange-500/20 bg-orange-500/[0.02]">
-              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <Shuffle className="w-4 h-4 text-purple-400" />
-                  <span className="font-semibold text-white text-sm">{req.id}</span>
-                  <Badge variant={req.type === 'MERGE_TEAMS' ? 'danger' : 'info'}>
-                    {req.type === 'MERGE_TEAMS' ? 'Team Merge' : 'Transfer'}
-                  </Badge>
-                  <CategoryBadge code={req.category} />
-                </div>
-                <p className="text-xs text-gray-500">Requested by {req.requestedBy} · {req.requestedAt}</p>
-              </div>
-
-              {/* Source → Target */}
-              <div className="grid grid-cols-3 gap-3 items-center mb-4">
-                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
-                  <p className="text-xs text-red-400 font-medium mb-1">FROM</p>
-                  <p className="font-semibold text-white text-sm">{req.source.name}</p>
-                  <p className="text-xs text-gray-500">{req.source.school}</p>
-                  <p className="text-xs text-red-400 mt-1">{req.source.present}/{req.source.total} present</p>
-                </div>
-                <div className="text-center">
-                  <Shuffle className="w-5 h-5 text-purple-400 mx-auto mb-1" />
-                  {req.students.map(s => (
-                    <div key={s} className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-400 mb-1">{s}</div>
-                  ))}
-                </div>
-                <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                  <p className="text-xs text-green-400 font-medium mb-1">TO</p>
-                  <p className="font-semibold text-white text-sm">{req.target.name}</p>
-                  <p className="text-xs text-gray-500">{req.target.school}</p>
-                  <p className="text-xs text-green-400 mt-1">{req.target.present}/{req.target.total} present</p>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 mb-3">
-                <p className="text-xs text-gray-500 mb-0.5">Reason:</p>
-                <p className="text-sm text-gray-300">{req.reason}</p>
-              </div>
-
-              {req.warnings.map((w, i) => (
-                <div key={i} className="flex items-center gap-2 p-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 mb-2">
-                  <AlertCircle className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
-                  <p className="text-xs text-yellow-400">{w}</p>
-                </div>
-              ))}
-
-              <div className="flex gap-2 mt-3 justify-end">
-                <Button variant="danger" size="sm" icon={XCircle}
-                  onClick={() => { setSelected(req); setActionType('reject'); }}>Reject</Button>
-                <Button size="sm" icon={CheckCircle2}
-                  onClick={() => { setSelected(req); setActionType('approve'); }}>Approve</Button>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      <Modal
-        open={!!selected}
-        onClose={() => { setSelected(null); setNotes(''); }}
-        title={actionType === 'approve' ? 'Approve Adjustment' : 'Reject Request'}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setSelected(null)}>Cancel</Button>
-            <Button variant={actionType === 'approve' ? 'primary' : 'danger'}
-              icon={actionType === 'approve' ? CheckCircle2 : XCircle} onClick={handleAction}>
-              Confirm {actionType === 'approve' ? 'Approval' : 'Rejection'}
-            </Button>
-          </>
-        }
-      >
-        <Textarea
-          label={actionType === 'approve' ? 'Authorization note (optional)' : 'Rejection reason *'}
-          id="adj-notes" rows={3} value={notes}
-          onChange={e => setNotes(e.target.value)}
-          placeholder={actionType === 'approve' ? 'e.g. Cross-school merge authorized by Head Judge' : 'Reason for rejection…'}
-        />
-      </Modal>
-    </div>
-  );
+        <div className="flex justify-end mt-4"><Button onClick={() => void submit()} loading={saving} disabled={loading}>Send Request</Button></div>
+      </>}
+    </Card>
+    {loading ? <p role="status" className="text-center text-gray-400 py-8">Loading adjustment records…</p> : error ? <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-red-400">{error}</div> :
+      <Card padding="none"><div className="px-5 py-4 border-b border-white/5"><h3 className="font-semibold text-white text-sm">Existing requests</h3></div>{requests.length === 0 ? <p className="p-6 text-center text-gray-400">No adjustment requests found.</p> : <div className="divide-y divide-white/5">{requests.map(request => <div key={request.id} className="p-5"><div className="flex justify-between gap-3"><span className="font-medium text-white">{teamName(request.sourceEntryId ?? '')} → {teamName(request.targetEntryId ?? '')}</span><Badge variant="warning">{request.status ?? 'PENDING'}</Badge></div><p className="text-xs text-gray-400 mt-2">{request.reason ?? 'No reason supplied'}</p><p className="text-xs text-gray-500 mt-1">Students: {request.studentIds?.join(', ') ?? '—'}</p></div>)}</div>}</Card>}
+  </div>;
 }

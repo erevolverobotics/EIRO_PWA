@@ -1,61 +1,61 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { PageHeader, Card, Button, CategoryBadge, StatusBadge, Modal, Input, Select, Textarea } from '@/components/ui';
+import { PageHeader, Card, Button, StatusBadge, Modal, Input, Select, Textarea } from '@/components/ui';
 import { CreditCard, Search, CheckCircle2, AlertCircle, Loader2, RefreshCw, Receipt } from 'lucide-react';
-import type { PaymentMethod, CategoryCode } from '@/lib/types';
+import type { PaymentMethod } from '@/lib/types';
 import { db } from '@/lib/firebase/config';
 import {
-  collection, getDocs, doc, addDoc, updateDoc, serverTimestamp, query, where,
+  collection, getDocs,
 } from 'firebase/firestore';
-import { useAuth } from '@/lib/firebase/auth-context';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Invoice {
   id: string;
-  schoolId: string;
-  schoolName: string;
-  teamId: string;
-  teamName: string;
-  category: CategoryCode;
-  amount: number;
-  paidAmount?: number;
-  status: string;
-  method: PaymentMethod | null;
-  ref?: string;
-  verifiedBy?: string;
-  verifiedAt?: string;
+  schoolId?: string;
+  teamId?: string;
+  totalMinorUnits?: number;
+  paidAmountMinorUnits?: number;
+  status?: string;
 }
 
 interface Payment {
   id: string;
-  invoiceId: string;
-  schoolName: string;
-  teamName: string;
-  amount: number;
-  method: PaymentMethod;
-  ref: string;
-  verifiedBy: string;
-  verifiedAt: string;
+  invoiceId?: string;
+  schoolId?: string;
+  teamId?: string;
+  amountMinorUnits?: number;
+  method?: PaymentMethod;
+  externalReference?: string;
+  verifiedByUid?: string;
+  status?: string;
 }
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER'];
+const money = (minorUnits?: number) =>
+  typeof minorUnits === 'number' ? `₹${(minorUnits / 100).toLocaleString('en-IN')}` : '—';
+const amountDue = (invoice: Invoice) =>
+  typeof invoice.totalMinorUnits === 'number'
+    ? Math.max(invoice.totalMinorUnits - (invoice.paidAmountMinorUnits ?? 0), 0)
+    : undefined;
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PaymentsPage() {
-  const { user } = useAuth();
-
   const [invoices, setInvoices]     = useState<Invoice[]>([]);
   const [payments, setPayments]     = useState<Payment[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState('');
   const [saving, setSaving]         = useState(false);
   const [search, setSearch]         = useState('');
 
   const [verifyModal, setVerifyModal] = useState<Invoice | null>(null);
-  const [payForm, setPayForm] = useState({ method: 'CASH' as PaymentMethod, amount: '', ref: '', notes: '' });
+  const [payForm, setPayForm] = useState({
+    method: 'CASH' as PaymentMethod, amount: '', ref: '', notes: '', idempotencyKey: '',
+  });
 
   // ── Load ────────────────────────────────────────────────────────────────────
 
@@ -67,65 +67,43 @@ export default function PaymentsPage() {
         getDocs(collection(db, 'payments')),
       ]);
 
-      setInvoices(invSnap.docs.map(d => ({
-        id: d.id,
-        schoolId: '', schoolName: '', teamId: '', teamName: '',
-        category: 'SUMO' as CategoryCode, amount: 0,
-        status: 'PENDING', method: null,
-        ...(d.data() as Partial<Invoice>),
-      })));
-
-      setPayments(paySnap.docs.map(d => ({
-        id: d.id,
-        invoiceId: '', schoolName: '', teamName: '',
-        amount: 0, method: 'CASH' as PaymentMethod,
-        ref: '', verifiedBy: '', verifiedAt: '',
-        ...(d.data() as Partial<Payment>),
-      })));
+      setInvoices(invSnap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Invoice, 'id'>) })));
+      setPayments(paySnap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Payment, 'id'>) })));
+      setError('');
     } catch (e) {
       console.error(e);
+      setError('Payment information could not be loaded. Check your role and Firestore permissions, then retry.');
       toast.error('Failed to load payments. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   // ── Verify payment ──────────────────────────────────────────────────────────
 
   const handleVerify = async () => {
-    if (!verifyModal || !user) return;
-    if (!payForm.amount) return toast.error('Amount is required');
+    if (!verifyModal) return;
+    const amount = Number(payForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return toast.error('Enter an amount greater than zero');
     setSaving(true);
     try {
-      // Create a payment record
-      await addDoc(collection(db, 'payments'), {
+      await callEiroFunction<Record<string, unknown>, unknown>('verifyManualPayment', {
         invoiceId: verifyModal.id,
-        schoolId: verifyModal.schoolId,
-        schoolName: verifyModal.schoolName,
-        teamId: verifyModal.teamId,
-        teamName: verifyModal.teamName,
-        amount: Math.round(parseFloat(payForm.amount) * 100), // store in paise
+        amountMinorUnits: Math.round(amount * 100),
         method: payForm.method,
-        ref: payForm.ref.trim(),
+        externalReference: payForm.ref.trim(),
         notes: payForm.notes.trim(),
-        verifiedBy: user.uid,
-        verifiedAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
-      });
-
-      // Update invoice status
-      await updateDoc(doc(db, 'invoices', verifyModal.id), {
-        status: 'VERIFIED',
-        paidAmount: Math.round(parseFloat(payForm.amount) * 100),
-        method: payForm.method,
-        updatedAt: serverTimestamp(),
+        idempotencyKey: payForm.idempotencyKey,
       });
 
       toast.success('Payment verified!');
       setVerifyModal(null);
-      setPayForm({ method: 'CASH', amount: '', ref: '', notes: '' });
+      setPayForm({ method: 'CASH', amount: '', ref: '', notes: '', idempotencyKey: '' });
       await load();
     } catch (e) {
       console.error(e);
@@ -139,18 +117,25 @@ export default function PaymentsPage() {
 
   const q = search.toLowerCase();
   const filteredInvoices = invoices.filter(p =>
-    !['VERIFIED', 'NOT_REQUIRED'].includes(p.status) &&
-    (q === '' || p.schoolName.toLowerCase().includes(q) || p.teamName.toLowerCase().includes(q))
+    !['VERIFIED', 'NOT_REQUIRED'].includes(p.status ?? '') &&
+    (q === '' ||
+      (p.schoolId ?? '').toLowerCase().includes(q) ||
+      (p.teamId ?? '').toLowerCase().includes(q))
   );
 
   const verifiedPayments = payments.filter(p =>
-    q === '' || p.schoolName.toLowerCase().includes(q) || p.teamName.toLowerCase().includes(q)
+    p.status === 'VERIFIED' &&
+    (q === '' ||
+      (p.schoolId ?? '').toLowerCase().includes(q) ||
+      (p.teamId ?? '').toLowerCase().includes(q))
   );
 
   const pendingCount  = invoices.filter(p => p.status === 'PENDING').length;
   const partialCount  = invoices.filter(p => p.status === 'PARTIAL').length;
-  const verifiedCount = payments.length;
-  const totalVerified = payments.reduce((s, p) => s + p.amount, 0);
+  const verifiedCount = payments.filter(p => p.status === 'VERIFIED').length;
+  const totalVerified = payments
+    .filter(p => p.status === 'VERIFIED')
+    .reduce((s, p) => s + (p.amountMinorUnits ?? 0), 0);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -178,19 +163,19 @@ export default function PaymentsPage() {
       {/* Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <Card className="text-center">
-          <div className="text-2xl font-black text-yellow-400 mb-1">{pendingCount}</div>
+          <div className="text-2xl font-black text-yellow-400 mb-1">{error || loading ? '—' : pendingCount}</div>
           <div className="text-xs text-gray-500">Pending</div>
         </Card>
         <Card className="text-center">
-          <div className="text-2xl font-black text-orange-400 mb-1">{partialCount}</div>
+          <div className="text-2xl font-black text-orange-400 mb-1">{error || loading ? '—' : partialCount}</div>
           <div className="text-xs text-gray-500">Partial</div>
         </Card>
         <Card className="text-center">
-          <div className="text-2xl font-black text-green-400 mb-1">{verifiedCount}</div>
+          <div className="text-2xl font-black text-green-400 mb-1">{error || loading ? '—' : verifiedCount}</div>
           <div className="text-xs text-gray-500">Verified</div>
         </Card>
         <Card className="text-center">
-          <div className="text-2xl font-black text-indigo-400 mb-1">₹{(totalVerified / 100).toLocaleString('en-IN')}</div>
+          <div className="text-2xl font-black text-indigo-400 mb-1">{error || loading ? '—' : money(totalVerified)}</div>
           <div className="text-xs text-gray-500">Total Verified</div>
         </Card>
       </div>
@@ -198,7 +183,7 @@ export default function PaymentsPage() {
       {/* Search */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-        <input type="text" placeholder="Search school or team…" value={search}
+        <input type="text" placeholder="Search school or team ID…" value={search}
           onChange={e => setSearch(e.target.value)}
           className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" />
       </div>
@@ -207,6 +192,11 @@ export default function PaymentsPage() {
         <div className="flex justify-center py-20">
           <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
         </div>
+      ) : error ? (
+        <div role="alert"><Card className="text-sm text-red-300">
+          <p>{error}</p>
+          <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
+        </Card></div>
       ) : (
         <>
           {/* Pending Payments */}
@@ -224,7 +214,7 @@ export default function PaymentsPage() {
                 <table className="eiro-table">
                   <thead>
                     <tr>
-                      <th>Invoice</th><th>School / Team</th><th>Category</th>
+                      <th>Invoice</th><th>School / Team IDs</th>
                       <th>Amount Due</th><th>Status</th><th>Action</th>
                     </tr>
                   </thead>
@@ -233,21 +223,27 @@ export default function PaymentsPage() {
                       <tr key={p.id}>
                         <td><span className="font-mono text-xs text-gray-400">{p.id.slice(0, 8)}</span></td>
                         <td>
-                          <div className="font-medium text-white text-sm">{p.schoolName}</div>
-                          <div className="text-xs text-gray-500">{p.teamName}</div>
+                          <div className="font-medium text-white text-sm">{p.schoolId ?? '—'}</div>
+                          <div className="text-xs text-gray-500">{p.teamId ?? '—'}</div>
                         </td>
-                        <td><CategoryBadge code={p.category} /></td>
                         <td>
-                          <div className="font-bold text-white">₹{(p.amount / 100).toLocaleString('en-IN')}</div>
-                          {p.paidAmount ? (
-                            <div className="text-xs text-green-400">Paid: ₹{(p.paidAmount / 100).toLocaleString('en-IN')}</div>
+                          <div className="font-bold text-white">{money(amountDue(p))}</div>
+                          {p.paidAmountMinorUnits ? (
+                            <div className="text-xs text-green-400">Paid: {money(p.paidAmountMinorUnits)}</div>
                           ) : null}
                         </td>
-                        <td><StatusBadge status={p.status} /></td>
+                        <td><StatusBadge status={p.status ?? 'UNKNOWN'} /></td>
                         <td>
                           <Button size="sm" icon={CheckCircle2} onClick={() => {
                             setVerifyModal(p);
-                            setPayForm({ method: 'CASH', amount: String(p.amount / 100), ref: '', notes: '' });
+                            const due = amountDue(p);
+                            setPayForm({
+                              method: 'CASH',
+                              amount: typeof due === 'number' ? String(due / 100) : '',
+                              ref: '',
+                              notes: '',
+                              idempotencyKey: crypto.randomUUID(),
+                            });
                           }}>
                             Verify
                           </Button>
@@ -281,13 +277,13 @@ export default function PaymentsPage() {
                     {verifiedPayments.map(p => (
                       <tr key={p.id}>
                         <td>
-                          <div className="font-medium text-white text-sm">{p.schoolName}</div>
-                          <div className="text-xs text-gray-500">{p.teamName}</div>
+                          <div className="font-medium text-white text-sm">{p.schoolId ?? '—'}</div>
+                          <div className="text-xs text-gray-500">{p.teamId ?? '—'}</div>
                         </td>
-                        <td><span className="font-bold text-green-400">₹{(p.amount / 100).toLocaleString('en-IN')}</span></td>
+                        <td><span className="font-bold text-green-400">{money(p.amountMinorUnits)}</span></td>
                         <td><span className="text-xs text-gray-400">{p.method}</span></td>
-                        <td><span className="font-mono text-xs text-gray-400">{p.ref}</span></td>
-                        <td><span className="text-xs text-gray-400">{p.verifiedBy}</span></td>
+                        <td><span className="font-mono text-xs text-gray-400">{p.externalReference ?? '—'}</span></td>
+                        <td><span className="text-xs text-gray-400">{p.verifiedByUid ?? '—'}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -300,7 +296,7 @@ export default function PaymentsPage() {
 
       {/* Verify modal */}
       {verifyModal && (
-        <Modal open={!!verifyModal} onClose={() => setVerifyModal(null)} title={`Verify Payment — ${verifyModal.teamName}`}
+        <Modal open={!!verifyModal} onClose={() => setVerifyModal(null)} title={`Verify Payment — ${verifyModal.teamId ?? verifyModal.id}`}
           footer={
             <>
               <Button variant="secondary" onClick={() => setVerifyModal(null)} disabled={saving}>Cancel</Button>
@@ -312,9 +308,9 @@ export default function PaymentsPage() {
         >
           <div className="space-y-4">
             <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-sm">
-              <p><span className="text-gray-500">School:</span> {verifyModal.schoolName}</p>
-              <p><span className="text-gray-500">Team:</span> {verifyModal.teamName}</p>
-              <p><span className="text-gray-500">Amount Due:</span> ₹{(verifyModal.amount / 100).toLocaleString('en-IN')}</p>
+              <p><span className="text-gray-500">School:</span> {verifyModal.schoolId ?? '—'}</p>
+              <p><span className="text-gray-500">Team:</span> {verifyModal.teamId ?? '—'}</p>
+              <p><span className="text-gray-500">Amount Due:</span> {money(amountDue(verifyModal))}</p>
             </div>
             <Select label="Payment Method" id="pay-method" value={payForm.method}
               onChange={e => setPayForm(f => ({ ...f, method: e.target.value as PaymentMethod }))}

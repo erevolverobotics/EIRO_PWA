@@ -1,188 +1,78 @@
 'use client';
 
-import { useState } from 'react';
-import { PageHeader, Card, Button, Badge } from '@/components/ui';
-import { CalendarDays, CheckCircle2, AlertCircle, Eye, Save, Info, BarChart3 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { PageHeader, Card, Button } from '@/components/ui';
+import { Save } from 'lucide-react';
 import type { AttendanceStatus } from '@/lib/types';
+import { getAll } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
-const DAY1_RECORD: Record<string, AttendanceStatus> = {
-  'S001': 'PRESENT', 'S002': 'PRESENT',
-  'S003': 'PRESENT', 'S004': 'ABSENT', 'S005': 'NOT_MARKED',
-  'S006': 'PRESENT', 'S007': 'ABSENT',
-};
-
-const MOCK_TEAMS = [
-  {
-    teamId: 'T001', teamCode: 'EIRO-2026-041', teamName: 'Robo Warriors', school: 'DAV Public School',
-    students: [
-      { id: 'S001', name: 'Arjun Sharma', grade: '7A' },
-      { id: 'S002', name: 'Riya Patel', grade: '7B' },
-    ],
-  },
-  {
-    teamId: 'T002', teamCode: 'EIRO-2026-042', teamName: 'Eco Rangers', school: 'DAV Public School',
-    students: [
-      { id: 'S003', name: 'Aditya Kumar', grade: '8A' },
-      { id: 'S004', name: 'Sneha Rao', grade: '8B' },
-      { id: 'S005', name: 'Vikram Singh', grade: '8A' },
-    ],
-  },
-  {
-    teamId: 'T003', teamCode: 'EIRO-2026-043', teamName: 'Maze Masters', school: 'St. Josephs HS',
-    students: [
-      { id: 'S006', name: 'Pooja Nair', grade: '9A' },
-      { id: 'S007', name: 'Rahul Gupta', grade: '9B' },
-    ],
-  },
-];
-
-const ATTENDANCE_COLOR: Record<AttendanceStatus, string> = {
-  PRESENT: 'text-green-400',
-  ABSENT: 'text-red-400',
-  NOT_MARKED: 'text-gray-500',
-};
-
-const ATTENDANCE_BADGE_VARIANT: Record<AttendanceStatus, 'success' | 'danger' | 'default'> = {
-  PRESENT: 'success',
-  ABSENT: 'danger',
-  NOT_MARKED: 'default',
-};
+type Session = { id: string; eventId: string; dayNumber: 1 | 2; title: string };
+type Entry = { id: string; eventId: string; teamId: string; mergedIntoEntryId?: string };
+type Team = { id: string; teamName: string; displayTeamCode: string };
+type Member = { teamId: string; studentId: string; status?: string };
+type TrainingRecord = { id: string; sessionId: string; entryId: string; teamId: string; studentId: string; dayNumber: number; status: AttendanceStatus };
 
 export default function TrainingDay2Page() {
-  const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>(() => {
-    const init: Record<string, AttendanceStatus> = {};
-    MOCK_TEAMS.forEach(t => t.students.forEach(s => { init[s.id] = 'NOT_MARKED'; }));
-    return init;
-  });
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [records, setRecords] = useState<TrainingRecord[]>([]);
+  const [sessionId, setSessionId] = useState('');
+  const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const mark = (id: string, status: AttendanceStatus) => {
-    setAttendance(a => ({ ...a, [id]: status }));
-    setSaved(false);
-  };
-
-  const handleSave = () => {
+  const [error, setError] = useState('');
+  useEffect(() => {
+    Promise.all([getAll<Session>('trainingSessions'), getAll<Entry>('stageEntries'), getAll<Team>('teams'), getAll<Member>('teamMemberships'), getAll<TrainingRecord>('trainingAttendance')])
+      .then(([sessionRows, entryRows, teamRows, memberRows, attendanceRows]) => {
+        const daySessions = sessionRows.filter(session => session.dayNumber === 2);
+        setSessions(daySessions); setSessionId(daySessions[0]?.id ?? '');
+        setEntries(entryRows); setTeams(teamRows); setMembers(memberRows); setRecords(attendanceRows);
+      }).catch(() => setError('Training attendance could not be loaded.'))
+      .finally(() => setLoading(false));
+  }, []);
+  const session = sessions.find(item => item.id === sessionId);
+  const roster = useMemo(() => session ? entries.filter(entry => entry.eventId === session.eventId && !entry.mergedIntoEntryId).flatMap(entry => {
+    const team = teams.find(item => item.id === entry.teamId);
+    return members.filter(member => member.teamId === entry.teamId && member.status !== 'INACTIVE').map(member => ({ entry, team, member }));
+  }) : [], [session, entries, teams, members]);
+  const statusFor = (studentId: string) => attendance[studentId] ?? records.find(item => item.sessionId === session?.id && item.studentId === studentId)?.status ?? 'NOT_MARKED';
+  const save = async () => {
+    if (!session) return;
+    const corrections = roster.filter(({ member }) => {
+      const existing = records.find(item => item.sessionId === session.id && item.studentId === member.studentId);
+      return existing && existing.status !== statusFor(member.studentId);
+    });
+    if (corrections.length && !correctionReason.trim()) { toast.error('Provide a reason to correct existing attendance.'); return; }
     setSaving(true);
-    setTimeout(() => { setSaving(false); setSaved(true); toast.success('Training Day 2 attendance saved!'); }, 1000);
-  };
-
-  const allStudents = MOCK_TEAMS.flatMap(t => t.students);
-  const bothPresent = allStudents.filter(s => DAY1_RECORD[s.id] === 'PRESENT' && attendance[s.id] === 'PRESENT').length;
-  const day2Present = allStudents.filter(s => attendance[s.id] === 'PRESENT').length;
-
-  return (
-    <div className="max-w-3xl space-y-6 animate-fade-in-up">
-      <PageHeader
-        title="Training Day 2 Attendance"
-        subtitle="V11 — Mark Day 2 independently. Day 1 status shown for reference only."
-        actions={
-          <Button icon={Save} loading={saving} onClick={handleSave} variant={saved ? 'secondary' : 'primary'}>
-            {saved ? 'Saved ✓' : 'Save Day 2'}
-          </Button>
+    try {
+      for (const { entry, member } of roster) {
+        const status = statusFor(member.studentId);
+        const existing = records.find(item => item.sessionId === session.id && item.studentId === member.studentId);
+        if (existing && existing.status !== status) {
+          await callEiroFunction<Record<string, unknown>, unknown>('correctTrainingAttendance', { attendanceId: existing.id, status, correctionReason: correctionReason.trim() });
+        } else if (!existing && status !== 'NOT_MARKED') {
+          await callEiroFunction<Record<string, unknown>, unknown>('markTrainingAttendance', { sessionId: session.id, eventId: session.eventId, entryId: entry.id, teamId: entry.teamId, studentId: member.studentId, dayNumber: 2, status });
         }
-      />
-
-      <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-2">
-        <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
-        <p className="text-xs text-blue-400">
-          Day 1 attendance is shown as <strong>read-only context</strong>. Day 2 must be marked independently.
-          A Day 1 record does NOT automatically carry over to Day 2.
-        </p>
-      </div>
-
-      {/* Summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Card className="text-center">
-          <div className="text-2xl font-black text-green-400 mb-1">{day2Present}</div>
-          <div className="text-xs text-gray-500">Day 2 Present</div>
-        </Card>
-        <Card className="text-center">
-          <div className="text-2xl font-black text-indigo-400 mb-1">{bothPresent}</div>
-          <div className="text-xs text-gray-500">Both Days ✓</div>
-        </Card>
-        <Card className="text-center">
-          <div className="text-2xl font-black text-orange-400 mb-1">
-            {allStudents.filter(s => DAY1_RECORD[s.id] === 'PRESENT' && attendance[s.id] === 'ABSENT').length}
-          </div>
-          <div className="text-xs text-gray-500">Day1✓ Day2✗</div>
-        </Card>
-        <Card className="text-center">
-          <div className="text-2xl font-black text-gray-500 mb-1">
-            {allStudents.filter(s => attendance[s.id] === 'NOT_MARKED').length}
-          </div>
-          <div className="text-xs text-gray-500">Not Marked</div>
-        </Card>
-      </div>
-
-      {MOCK_TEAMS.map(team => (
-        <Card key={team.teamId} padding="none">
-          <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-white text-sm">{team.teamName}</h3>
-              <p className="text-xs text-gray-500">{team.school}</p>
-            </div>
-            <Badge variant="info">Day 2</Badge>
-          </div>
-
-          {/* Header row */}
-          <div className="grid grid-cols-4 gap-2 px-5 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5">
-            <span className="col-span-1">Student</span>
-            <span className="text-center">Day 1 (ref)</span>
-            <span className="text-center col-span-2">Day 2 Mark</span>
-          </div>
-
-          <div className="divide-y divide-white/5">
-            {team.students.map(student => {
-              const day1 = DAY1_RECORD[student.id] ?? 'NOT_MARKED';
-              const day2 = attendance[student.id];
-              return (
-                <div key={student.id} className="grid grid-cols-4 gap-2 items-center px-5 py-3">
-                  <div className="col-span-1">
-                    <p className="text-sm font-medium text-white">{student.name}</p>
-                    <p className="text-xs text-gray-500">Gr {student.grade}</p>
-                  </div>
-                  {/* Day 1 read-only */}
-                  <div className="flex justify-center">
-                    <Badge variant={ATTENDANCE_BADGE_VARIANT[day1]}>
-                      {day1 === 'NOT_MARKED' ? '—' : day1 === 'PRESENT' ? '✓' : '✗'}
-                    </Badge>
-                  </div>
-                  {/* Day 2 controls */}
-                  <div className="col-span-2 flex gap-2 justify-end">
-                    <button
-                      onClick={() => mark(student.id, 'PRESENT')}
-                      className={`flex-1 py-2 rounded-xl text-xs font-medium transition-all duration-150 border ${
-                        day2 === 'PRESENT'
-                          ? 'bg-green-500 text-white border-green-500'
-                          : 'bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20'
-                      }`}
-                    >
-                      ✓ Present
-                    </button>
-                    <button
-                      onClick={() => mark(student.id, 'ABSENT')}
-                      className={`flex-1 py-2 rounded-xl text-xs font-medium transition-all duration-150 border ${
-                        day2 === 'ABSENT'
-                          ? 'bg-red-500 text-white border-red-500'
-                          : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20'
-                      }`}
-                    >
-                      ✗ Absent
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      ))}
-
-      <div className="flex gap-3 justify-end pb-4">
-        <Button variant="secondary" icon={BarChart3}>View Dashboard</Button>
-        <Button icon={Save} loading={saving} onClick={handleSave}>Save Day 2 Attendance</Button>
-      </div>
-    </div>
-  );
+      }
+      toast.success('Training attendance recorded.');
+      setCorrectionReason('');
+    } catch { toast.error('Training attendance could not be saved. Refresh to confirm persisted records.'); }
+    finally { setSaving(false); }
+  };
+  return <div className="max-w-3xl space-y-6 animate-fade-in-up">
+    <PageHeader title="Training Day 2 Attendance" subtitle="Firestore training session and roster records" actions={<Button icon={Save} onClick={() => void save()} loading={saving} disabled={!session}>Save Attendance</Button>} />
+    {loading ? <p role="status" className="text-center text-gray-400 py-12">Loading training roster…</p> : error ? <div role="alert" className="text-red-400">{error}</div> : sessions.length === 0 ? <Card className="text-center py-12 text-gray-400">No Day 2 training session has been configured.</Card> : <>
+      <label className="block text-sm text-gray-400">Training session<select className="eiro-input mt-1" value={sessionId} onChange={event => { setSessionId(event.target.value); setAttendance({}); }}>{sessions.map(item => <option key={item.id} value={item.id}>{item.title} · {item.id}</option>)}</select></label>
+      {roster.length === 0 ? <Card className="text-center py-10 text-gray-400">No active entry roster is associated with this session.</Card> : roster.map(({ entry, team, member }) => {
+        const day1Status = records.find(record => record.dayNumber === 1 && record.teamId === entry.teamId && record.studentId === member.studentId)?.status ?? 'NOT_MARKED';
+        return <Card key={`${entry.id}-${member.studentId}`} className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-medium text-white">{member.studentId}</p><p className="text-xs text-gray-500">{team?.teamName ?? entry.teamId} · Day 1: {day1Status}</p></div><div className="flex gap-2">{(['PRESENT', 'ABSENT', 'NOT_MARKED'] as AttendanceStatus[]).map(status => <button key={status} onClick={() => setAttendance(old => ({ ...old, [member.studentId]: status }))} className={`px-3 py-2 rounded-lg text-xs border ${statusFor(member.studentId) === status ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-white/5 border-white/10 text-gray-400'}`}>{status}</button>)}</div></Card>;
+      })}
+      {records.some(record => record.sessionId === session?.id) && <label className="block text-sm text-gray-400">Correction reason (required when changing an existing record)<input value={correctionReason} onChange={event => setCorrectionReason(event.target.value)} className="eiro-input mt-1" /></label>}
+    </>}
+  </div>;
 }

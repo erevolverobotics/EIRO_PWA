@@ -1,92 +1,116 @@
 'use client';
 
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PageHeader, Card, KpiCard, Button, CategoryBadge, Badge } from '@/components/ui';
-import { UserCheck, Download, Filter, BarChart3, Users, AlertCircle } from 'lucide-react';
+import { UserCheck, RefreshCw, BarChart3, Users, AlertCircle, Loader2 } from 'lucide-react';
+import { getAll } from '@/lib/firebase/firestore';
 import type { CategoryCode } from '@/lib/types';
 
-const SUMMARY = [
-  { category: 'SUMO' as CategoryCode, students: 16, present: 14, absent: 1, notMarked: 1, teams: 8 },
-  { category: 'MAZE' as CategoryCode, students: 8, present: 8, absent: 0, notMarked: 0, teams: 4 },
-  { category: 'ECO_CITY' as CategoryCode, students: 15, present: 12, absent: 2, notMarked: 1, teams: 5 },
-  { category: 'WALL' as CategoryCode, students: 8, present: 7, absent: 1, notMarked: 0, teams: 4 },
-];
-
-const totalStudents = SUMMARY.reduce((s, c) => s + c.students, 0);
-const totalPresent = SUMMARY.reduce((s, c) => s + c.present, 0);
-const totalAbsent = SUMMARY.reduce((s, c) => s + c.absent, 0);
+interface AttendanceRecord {
+  id: string;
+  studentId?: string;
+  teamId?: string;
+  entryId?: string;
+  eventId?: string;
+  sessionId?: string;
+  dayNumber?: number;
+  status?: string;
+  markedAt?: unknown;
+}
+interface Team { id: string; categoryCode?: string; displayTeamCode?: string; teamName?: string }
+interface Student { id: string; name?: string }
 
 export default function AdminAttendancePage() {
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [training, competition, teamData, studentData] = await Promise.all([
+        getAll<AttendanceRecord>('trainingAttendance'),
+        getAll<AttendanceRecord>('studentAttendance'),
+        getAll<Team>('teams'),
+        getAll<Student>('students'),
+      ]);
+      setAttendance([...training, ...competition]);
+      setTeams(teamData);
+      setStudents(studentData);
+    } catch (e) {
+      console.error(e);
+      setError('Could not load attendance records. Check your access and try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { void Promise.resolve().then(load); }, [load]);
+  const refresh = () => { setLoading(true); setError(''); void load(); };
+
+  const counts = useMemo(() => ({
+    present: attendance.filter(record => record.status === 'PRESENT').length,
+    absent: attendance.filter(record => record.status === 'ABSENT').length,
+    unmarked: attendance.filter(record => !record.status || record.status === 'NOT_MARKED').length,
+    students: new Set(attendance.map(record => record.studentId).filter(Boolean)).size,
+  }), [attendance]);
+  const categories = useMemo(() => {
+    const grouped = new Map<string, { present: number; absent: number; unmarked: number; students: Set<string> }>();
+    attendance.forEach(record => {
+      const team = teams.find(item => item.id === record.teamId);
+      const code = team?.categoryCode || 'UNASSIGNED';
+      const item = grouped.get(code) || { present: 0, absent: 0, unmarked: 0, students: new Set<string>() };
+      if (record.studentId) item.students.add(record.studentId);
+      if (record.status === 'PRESENT') item.present += 1;
+      else if (record.status === 'ABSENT') item.absent += 1;
+      else item.unmarked += 1;
+      grouped.set(code, item);
+    });
+    return [...grouped.entries()];
+  }, [attendance, teams]);
+
   return (
     <div className="space-y-6 animate-fade-in-up">
-      <PageHeader
-        title="Attendance Management"
-        subtitle="A16 — Cross-event student attendance overview"
-        actions={
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" icon={Filter}>Filter</Button>
-            <Button variant="secondary" size="sm" icon={Download}>Export</Button>
-          </div>
-        }
-      />
-
+      <PageHeader title="Attendance Management" subtitle="Attendance records from training and competition"
+        actions={<Button variant="secondary" size="sm" icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh</Button>} />
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <KpiCard title="Total Students" value={totalStudents} icon={Users} color="indigo" />
-        <KpiCard title="Present" value={totalPresent} icon={UserCheck} color="green" />
-        <KpiCard title="Absent" value={totalAbsent} icon={AlertCircle} color="red" />
-        <KpiCard title="Attendance Rate" value={`${Math.round((totalPresent / totalStudents) * 100)}%`} icon={BarChart3} color="blue" />
+        <KpiCard title="Unique Students" value={counts.students} icon={Users} color="indigo" />
+        <KpiCard title="Present Records" value={counts.present} icon={UserCheck} color="green" />
+        <KpiCard title="Absent Records" value={counts.absent} icon={AlertCircle} color="red" />
+        <KpiCard title="Unmarked Records" value={counts.unmarked} icon={BarChart3} color="orange" />
       </div>
-
-      {/* Per-category breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {SUMMARY.map(cat => {
-          const rate = Math.round((cat.present / cat.students) * 100);
-          return (
-            <Card key={cat.category}>
-              <div className="flex items-center justify-between mb-4">
-                <CategoryBadge code={cat.category} />
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm font-bold ${rate >= 90 ? 'text-green-400' : rate >= 75 ? 'text-yellow-400' : 'text-red-400'}`}>{rate}%</span>
-                  <span className="text-xs text-gray-500">{cat.teams} teams</span>
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {loading ? <div className="flex justify-center py-12"><Loader2 className="w-7 h-7 animate-spin text-indigo-400" /></div> :
+        attendance.length === 0 ? <Card className="text-center text-gray-400">No attendance records found.</Card> : <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {categories.map(([code, item]) => {
+              const total = item.present + item.absent + item.unmarked;
+              const rate = total ? Math.round(item.present / total * 100) : 0;
+              return <Card key={code}>
+                <div className="flex items-center justify-between mb-4">
+                  {code === 'UNASSIGNED' ? <Badge>Unassigned category</Badge> : <CategoryBadge code={code as CategoryCode} />}
+                  <span className="text-xs text-gray-400">{item.students.size} unique students · {rate}% present records</span>
                 </div>
-              </div>
-
-              <div className="space-y-3">
-                {[
-                  { label: 'Present', count: cat.present, total: cat.students, color: 'bg-green-500' },
-                  { label: 'Absent', count: cat.absent, total: cat.students, color: 'bg-red-500' },
-                  { label: 'Not Marked', count: cat.notMarked, total: cat.students, color: 'bg-gray-600' },
-                ].map(bar => (
-                  <div key={bar.label}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-500">{bar.label}</span>
-                      <span className="text-white font-medium">{bar.count} / {bar.total}</span>
-                    </div>
-                    <div className="w-full h-2 bg-white/5 rounded-full">
-                      <div
-                        className={`h-full ${bar.color} rounded-full transition-all duration-700`}
-                        style={{ width: `${cat.students > 0 ? (bar.count / cat.students) * 100 : 0}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* Alerts */}
-      {SUMMARY.some(c => c.notMarked > 0) && (
-        <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex items-start gap-3">
-          <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="text-sm font-medium text-yellow-300">Unmarked attendance detected</p>
-            <p className="text-xs text-yellow-600 mt-0.5">
-              {SUMMARY.reduce((s, c) => s + c.notMarked, 0)} student(s) have not been marked. Venue coordinators should complete attendance marking before competition ends.
-            </p>
+                <p className="text-xs text-gray-500">Present {item.present} · Absent {item.absent} · Unmarked {item.unmarked}</p>
+              </Card>;
+            })}
           </div>
-        </div>
-      )}
+          <Card padding="none">
+            <div className="px-6 py-4 border-b border-white/5"><h3 className="font-semibold text-white text-sm">Attendance Records</h3></div>
+            <div className="overflow-x-auto"><table className="eiro-table"><thead><tr><th>Student</th><th>Team</th><th>Event / Session</th><th>Day</th><th>Status</th></tr></thead>
+              <tbody>{attendance.map(record => {
+                const team = teams.find(item => item.id === record.teamId);
+                return <tr key={record.id}>
+                  <td className="text-xs text-gray-300">{students.find(student => student.id === record.studentId)?.name || record.studentId || '—'}</td>
+                  <td className="text-xs text-gray-400">{team?.teamName || team?.displayTeamCode || record.teamId || record.entryId || '—'}</td>
+                  <td className="text-xs text-gray-400">{record.eventId || record.sessionId || '—'}</td>
+                  <td className="text-xs text-gray-400">{record.dayNumber ?? '—'}</td>
+                  <td><Badge variant={record.status === 'PRESENT' ? 'success' : record.status === 'ABSENT' ? 'danger' : 'warning'}>{record.status || 'NOT_MARKED'}</Badge></td>
+                </tr>;
+              })}</tbody>
+            </table></div>
+          </Card>
+        </>}
     </div>
   );
 }

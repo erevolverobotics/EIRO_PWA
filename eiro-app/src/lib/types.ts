@@ -99,6 +99,7 @@ export interface School {
 export interface Student {
   id: string;
   schoolId: string;
+  teamId?: string;
   name: string;
   grade: string;
   section?: string;
@@ -146,6 +147,7 @@ export interface Team {
 export interface Registration {
   id: string;
   teamId: string;
+  schoolId: string;
   seasonId: string;
   state: RegistrationState;
   eligibilitySnapshot: Record<string, unknown>;
@@ -154,6 +156,17 @@ export interface Registration {
   submittedAt?: unknown;
   approvedAt?: unknown;
   updatedAt: unknown;
+}
+
+export interface Notification {
+  id: string;
+  recipientUid: string;
+  channel?: string;
+  templateId?: string;
+  state?: string;
+  read: boolean;
+  sentAt?: unknown;
+  createdAt: unknown;
 }
 
 export interface StageEntry {

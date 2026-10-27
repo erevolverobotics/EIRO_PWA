@@ -1,189 +1,182 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { PageHeader, Card, Button, Badge, StatusBadge, CategoryBadge, Modal, Textarea } from '@/components/ui';
-import { Shuffle, CheckCircle2, XCircle, AlertCircle, Users, Info } from 'lucide-react';
+import { Shuffle, CheckCircle2, XCircle, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
+import { getAll } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import type { CategoryCode } from '@/lib/types';
 
-const REQUESTS = [
-  {
-    id: 'ADJ001',
-    type: 'MERGE_TEAMS' as const,
-    status: 'PENDING_REVIEW' as const,
-    category: 'SUMO' as CategoryCode,
-    source: { code: 'EIRO-2026-055', name: 'Iron Crushers', school: 'St. Josephs', present: 1, total: 2 },
-    target: { code: 'EIRO-2026-041', name: 'Robo Warriors', school: 'DAV Public', present: 2, total: 2 },
-    students: ['Riya Patel'],
-    reason: 'Source team has only 1 member present. Requesting merge into target team for competition.',
-    requestedBy: 'Coord. Priya Kumar',
-    requestedAt: '2026-10-28 08:45 AM',
-    warnings: ['Cross-school merge — requires explicit authorization', 'Combined team will have 3 members (within limit)'],
-  },
-  {
-    id: 'ADJ002',
-    type: 'TRANSFER_MEMBERS' as const,
-    status: 'PENDING_ACKNOWLEDGEMENT' as const,
-    category: 'ECO_CITY' as CategoryCode,
-    source: { code: 'EIRO-2026-042', name: 'Eco Rangers', school: 'DAV Public', present: 2, total: 3 },
-    target: { code: 'EIRO-2026-077', name: 'Green Minds', school: 'DAV Public', present: 2, total: 3 },
-    students: ['Vikram Singh'],
-    reason: 'Vikram needs to transfer to Green Minds due to scheduling conflict.',
-    requestedBy: 'Coord. Priya Kumar',
-    requestedAt: '2026-10-28 09:00 AM',
-    warnings: ['Source team will have 2 members after transfer (within minimum)'],
-  },
-];
+interface Adjustment {
+  id: string;
+  type?: string;
+  status?: string;
+  sourceEntryId?: string;
+  targetEntryId?: string;
+  studentIds?: string[];
+  reason?: string;
+  requestedBy?: string;
+  createdAt?: unknown;
+}
+interface Entry { id: string; teamId?: string }
+interface Team { id: string; teamName?: string; displayTeamCode?: string; categoryCode?: string; schoolId?: string }
+interface School { id: string; name?: string; schoolCode?: string }
+interface Student { id: string; name?: string }
+
+function displayDate(value: unknown) {
+  if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
+    return value.toDate().toLocaleString();
+  }
+  if (value instanceof Date) return value.toLocaleString();
+  return typeof value === 'string' ? value : '—';
+}
 
 export default function AdjustmentsPage() {
-  const [actionModal, setActionModal] = useState<{ open: boolean; req?: typeof REQUESTS[0]; type: 'approve' | 'reject' } | null>(null);
+  const [requests, setRequests] = useState<Adjustment[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [schools, setSchools] = useState<School[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [modal, setModal] = useState<{ request: Adjustment; decision: 'APPROVE' | 'REJECT' } | null>(null);
   const [reason, setReason] = useState('');
+  const [message, setMessage] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [requestData, entryData, teamData, schoolData, studentData] = await Promise.all([
+        getAll<Adjustment>('teamAdjustmentRequests'),
+        getAll<Entry>('stageEntries'),
+        getAll<Team>('teams'),
+        getAll<School>('schools'),
+        getAll<Student>('students'),
+      ]);
+      setRequests(requestData);
+      setEntries(entryData);
+      setTeams(teamData);
+      setSchools(schoolData);
+      setStudents(studentData);
+    } catch (e) {
+      console.error(e);
+      setError('Could not load adjustment requests or related records. Check your access and try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void Promise.resolve().then(load); }, [load]);
+  const refresh = () => { setLoading(true); setError(''); void load(); };
+
+  const teamForEntry = (entryId?: string) => {
+    const teamId = entries.find(entry => entry.id === entryId)?.teamId;
+    return teams.find(team => team.id === teamId);
+  };
+  const schoolName = (schoolId?: string) => {
+    const school = schools.find(item => item.id === schoolId);
+    return school?.name || school?.schoolCode || schoolId || '—';
+  };
+  const submit = async () => {
+    if (!modal || busy) return;
+    if (modal.decision === 'REJECT' && !reason.trim()) {
+      setError('A rejection reason is required.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await callEiroFunction<{ requestId: string; decision: 'APPROVE' | 'REJECT'; reason?: string }, unknown>(
+        'approveTeamAdjustment',
+        { requestId: modal.request.id, decision: modal.decision, ...(reason.trim() ? { reason: reason.trim() } : {}) }
+      );
+      setMessage(`Adjustment ${modal.decision === 'APPROVE' ? 'approved' : 'rejected'}.`);
+      setModal(null);
+      setReason('');
+      setLoading(true);
+      await load();
+    } catch (e) {
+      console.error(e);
+      setError('The adjustment action was not completed. The callable may be unavailable or the request may no longer be actionable.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Team Adjustment Approvals"
-        subtitle="A15 — Review and authorize merge/transfer requests"
-      />
+      <PageHeader title="Team Adjustment Approvals" subtitle="A15 — Review and authorize merge/transfer requests"
+        actions={<Button variant="secondary" size="sm" icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh</Button>} />
 
       <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex items-start gap-3">
         <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
         <div>
           <p className="text-sm font-medium text-yellow-300 mb-1">Safety Rules</p>
-          <ul className="text-xs text-yellow-600 space-y-0.5">
-            <li>• Cross-school merges are denied by default unless explicitly authorized</li>
-            <li>• Combined/remaining teams must meet min/max size requirements</li>
-            <li>• Blocked once competition has begun; only allowed before judging starts</li>
-            <li>• Approval executes an atomic roster update — history is preserved</li>
-          </ul>
+          <p className="text-xs text-yellow-600">Approval and rejection are submitted to the trusted Cloud Function; eligibility and roster changes are determined server-side.</p>
         </div>
       </div>
 
-      <div className="space-y-4">
-        {REQUESTS.map(req => (
-          <Card key={req.id} padding="none">
-            <div className="px-6 py-4 border-b border-white/5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-purple-500/15 flex items-center justify-center">
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {message && <p role="status" className="text-sm text-green-400">{message}</p>}
+      {loading ? <div className="flex justify-center py-12"><Loader2 className="w-7 h-7 animate-spin text-indigo-400" /></div> :
+        requests.length === 0 ? <Card className="text-center text-gray-400">No adjustment requests found.</Card> :
+          <div className="space-y-4">{requests.map(req => {
+            const source = teamForEntry(req.sourceEntryId);
+            const target = teamForEntry(req.targetEntryId);
+            const actionable = req.status === 'PENDING_REVIEW';
+            return <Card key={req.id} padding="none">
+              <div className="px-6 py-4 border-b border-white/5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
                   <Shuffle className="w-4 h-4 text-purple-400" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-white text-sm">{req.id}</span>
-                    <Badge variant={req.type === 'MERGE_TEAMS' ? 'danger' : 'info'}>
-                      {req.type === 'MERGE_TEAMS' ? 'Team Merge' : 'Member Transfer'}
-                    </Badge>
-                    <StatusBadge status={req.status} />
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">Requested by {req.requestedBy} · {req.requestedAt}</p>
-                </div>
-              </div>
-              <CategoryBadge code={req.category} />
-            </div>
-
-            <div className="p-6 space-y-4">
-              {/* Source → Target */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-                <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20">
-                  <p className="text-xs text-red-400 font-medium mb-2">SOURCE (from)</p>
-                  <p className="font-semibold text-white text-sm">{req.source.name}</p>
-                  <p className="text-xs text-gray-500">{req.source.school}</p>
-                  <p className="font-mono text-[10px] text-gray-600">{req.source.code}</p>
-                  <p className="text-xs mt-2">
-                    <span className={req.source.present < req.source.total ? 'text-red-400' : 'text-green-400'}>
-                      {req.source.present}/{req.source.total} present
-                    </span>
-                  </p>
-                </div>
-
-                <div className="text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <Shuffle className="w-6 h-6 text-purple-400" />
-                    <div className="space-y-1">
-                      {req.students.map(s => (
-                        <div key={s} className="px-2.5 py-1 rounded-full bg-purple-500/15 border border-purple-500/30 text-xs text-purple-400">{s}</div>
-                      ))}
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-white text-sm">{req.id}</span>
+                      <Badge variant={req.type === 'MERGE_TEAMS' ? 'danger' : 'info'}>{req.type || 'Adjustment'}</Badge>
+                      <StatusBadge status={req.status || 'UNKNOWN'} />
+                      {source?.categoryCode && <CategoryBadge code={source.categoryCode as CategoryCode} />}
                     </div>
-                    <p className="text-[10px] text-gray-600">moving →</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Requested by {req.requestedBy || '—'} · {displayDate(req.createdAt)}</p>
                   </div>
                 </div>
-
-                <div className="p-4 rounded-xl bg-green-500/5 border border-green-500/20">
-                  <p className="text-xs text-green-400 font-medium mb-2">TARGET (to)</p>
-                  <p className="font-semibold text-white text-sm">{req.target.name}</p>
-                  <p className="text-xs text-gray-500">{req.target.school}</p>
-                  <p className="font-mono text-[10px] text-gray-600">{req.target.code}</p>
-                  <p className="text-xs mt-2 text-green-400">{req.target.present}/{req.target.total} present</p>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[['Source', source, req.sourceEntryId], ['Target', target, req.targetEntryId]].map(([label, team, id]) => {
+                    const item = team as Team | undefined;
+                    return <div key={String(label)} className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <p className="text-xs text-gray-500 mb-1">{String(label)}</p>
+                      <p className="font-semibold text-white text-sm">{item?.teamName || item?.displayTeamCode || 'Team details unavailable'}</p>
+                      <p className="text-xs text-gray-500">{schoolName(item?.schoolId)}</p>
+                      <p className="font-mono text-[10px] text-gray-600">{item?.displayTeamCode || String(id || '—')}</p>
+                    </div>;
+                  })}
                 </div>
-              </div>
-
-              {/* Reason */}
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <p className="text-xs text-gray-500 mb-1">Reason:</p>
-                <p className="text-sm text-gray-300">{req.reason}</p>
-              </div>
-
-              {/* Warnings */}
-              {req.warnings.length > 0 && (
-                <div className="space-y-2">
-                  {req.warnings.map((w, i) => (
-                    <div key={i} className="flex items-center gap-2 p-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
-                      <AlertCircle className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
-                      <p className="text-xs text-yellow-400">{w}</p>
-                    </div>
-                  ))}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                  <p className="text-xs text-gray-500 mb-1">Reason</p><p className="text-sm text-gray-300">{req.reason || '—'}</p>
                 </div>
-              )}
-
-              {/* Actions */}
-              <div className="flex gap-3 justify-end pt-2">
-                <Button variant="danger" size="sm" icon={XCircle}
-                  onClick={() => setActionModal({ open: true, req, type: 'reject' })}>
-                  Reject
-                </Button>
-                <Button size="sm" icon={CheckCircle2}
-                  onClick={() => setActionModal({ open: true, req, type: 'approve' })}>
-                  Approve & Apply
-                </Button>
+                <div className="flex gap-2 flex-wrap">
+                  {(req.studentIds || []).map(id => <span key={id} className="text-xs px-2 py-1 rounded-full bg-purple-500/15 text-purple-300">{students.find(student => student.id === id)?.name || id}</span>)}
+                </div>
+                {actionable && <div className="flex gap-3 justify-end">
+                  <Button variant="danger" size="sm" icon={XCircle} onClick={() => { setReason(''); setModal({ request: req, decision: 'REJECT' }); }}>Reject</Button>
+                  <Button size="sm" icon={CheckCircle2} onClick={() => { setReason(''); setModal({ request: req, decision: 'APPROVE' }); }}>Approve & Apply</Button>
+                </div>}
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>;
+          })}</div>}
 
-      {/* Action Modal */}
-      <Modal
-        open={actionModal?.open ?? false}
-        onClose={() => setActionModal(null)}
-        title={actionModal?.type === 'approve' ? 'Approve Adjustment' : 'Reject Request'}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setActionModal(null)}>Cancel</Button>
-            <Button
-              variant={actionModal?.type === 'approve' ? 'primary' : 'danger'}
-              icon={actionModal?.type === 'approve' ? CheckCircle2 : XCircle}
-              onClick={() => setActionModal(null)}
-            >
-              {actionModal?.type === 'approve' ? 'Approve & Apply Atomically' : 'Reject Request'}
-            </Button>
-          </>
-        }
-      >
-        {actionModal?.type === 'approve' ? (
-          <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20">
-              <p className="text-sm text-green-400 font-medium mb-1">This will:</p>
-              <ul className="text-xs text-green-600 space-y-1">
-                <li>• Atomically update the roster on both stage entries</li>
-                <li>• Record a versioned before/after snapshot</li>
-                <li>• Notify affected school coordinators</li>
-                <li>• Mark source team stage entry as MERGED (if full merge)</li>
-              </ul>
-            </div>
-            <Textarea label="Authorization note (optional)" rows={2} value={reason} onChange={e => setReason(e.target.value)} />
-          </div>
-        ) : (
-          <Textarea label="Rejection reason *" rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="Explain why this request is rejected…" />
-        )}
+      <Modal open={Boolean(modal)} onClose={() => !busy && setModal(null)}
+        title={modal?.decision === 'APPROVE' ? 'Approve Adjustment' : 'Reject Request'}
+        footer={<>
+          <Button variant="secondary" onClick={() => setModal(null)} disabled={busy}>Cancel</Button>
+          <Button variant={modal?.decision === 'APPROVE' ? 'primary' : 'danger'} loading={busy} onClick={() => void submit()}>
+            {modal?.decision === 'APPROVE' ? 'Approve & Apply' : 'Reject Request'}
+          </Button>
+        </>}>
+        {modal?.decision === 'APPROVE'
+          ? <Textarea label="Authorization note (optional)" rows={3} value={reason} onChange={e => setReason(e.target.value)} />
+          : <Textarea label="Rejection reason *" rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="Explain why this request is rejected…" />}
       </Modal>
     </div>
   );

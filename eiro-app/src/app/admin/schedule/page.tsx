@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { PageHeader, Card, Button, CategoryBadge, KpiCard, Modal, Input, Select } from '@/components/ui';
-import { Calendar, Plus, Clock, MapPin, Users, Loader2, RefreshCw, Trash2, CheckCircle2 } from 'lucide-react';
+import { Calendar, Plus, MapPin, Loader2, RefreshCw, Trash2, CheckCircle2 } from 'lucide-react';
 import type { CategoryCode } from '@/lib/types';
 import { db } from '@/lib/firebase/config';
 import {
@@ -14,14 +14,12 @@ import toast from 'react-hot-toast';
 
 interface TimeSlot {
   id: string;
-  time: string;
-  duration: number;
-  arena: string;
-  category: CategoryCode;
-  teams: string[];
-  round: string;
-  judge: string;
-  eventId: string;
+  time?: string;
+  duration?: number;
+  arena?: string;
+  category?: CategoryCode;
+  round?: string;
+  eventId?: string;
 }
 
 const CATEGORIES: CategoryCode[] = ['SUMO', 'MAZE', 'WALL', 'ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'];
@@ -29,7 +27,7 @@ const HOURS = ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '1
 
 const EMPTY_FORM = {
   time: '09:00', duration: '30', arena: '', category: 'SUMO' as CategoryCode,
-  teams: '', round: '', judge: '', eventId: '',
+  round: '', eventId: '',
 };
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -37,6 +35,7 @@ const EMPTY_FORM = {
 export default function SchedulePage() {
   const [slots, setSlots]   = useState<TimeSlot[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError]   = useState('');
   const [saving, setSaving]   = useState(false);
   const [view, setView]     = useState<'list' | 'timeline'>('list');
   const [addOpen, setAddOpen] = useState(false);
@@ -53,37 +52,40 @@ export default function SchedulePage() {
       const snap = await getDocs(query(collection(db, 'timeSlots'), orderBy('time', 'asc')));
       const data: TimeSlot[] = snap.docs.map(d => ({
         id: d.id,
-        time: '', duration: 30, arena: '', category: 'SUMO' as CategoryCode,
-        teams: [], round: '', judge: '', eventId: '',
         ...(d.data() as Partial<TimeSlot>),
       }));
       setSlots(data);
+      setError('');
     } catch (e) {
       console.error(e);
+      setError('Schedule slots could not be loaded. Check your role and Firestore permissions, then retry.');
       toast.error('Failed to load schedule. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   // ── Add slot ────────────────────────────────────────────────────────────────
 
   const handleAdd = async () => {
     if (!form.time) return toast.error('Time is required');
     if (!form.arena.trim()) return toast.error('Arena is required');
+    const duration = Number(form.duration);
+    if (!Number.isInteger(duration) || duration < 1) return toast.error('Enter a valid slot duration.');
     setSaving(true);
     try {
       await addDoc(collection(db, 'timeSlots'), {
         time: form.time,
-        duration: parseInt(form.duration) || 30,
+        duration,
         arena: form.arena.trim().toUpperCase(),
         category: form.category,
-        teams: form.teams.split(',').map(t => t.trim()).filter(Boolean),
-        round: form.round.trim(),
-        judge: form.judge.trim(),
-        eventId: form.eventId.trim(),
+        ...(form.round.trim() ? { round: form.round.trim() } : {}),
+        ...(form.eventId.trim() ? { eventId: form.eventId.trim() } : {}),
         createdAt: serverTimestamp(),
       });
       toast.success('Time slot added!');
@@ -114,8 +116,7 @@ export default function SchedulePage() {
 
   // ── Stats ───────────────────────────────────────────────────────────────────
 
-  const uniqueTeams  = new Set(slots.flatMap(s => s.teams)).size;
-  const uniqueArenas = new Set(slots.map(s => s.arena)).size;
+  const uniqueArenas = new Set(slots.map(s => s.arena).filter(Boolean)).size;
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -141,16 +142,19 @@ export default function SchedulePage() {
       />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <KpiCard title="Time Slots"      value={slots.length}  icon={Calendar} color="indigo" />
-        <KpiCard title="Arenas Used"     value={uniqueArenas}  icon={MapPin}   color="blue"   />
-        <KpiCard title="Teams Scheduled" value={uniqueTeams}   icon={Users}    color="green"  />
-        <KpiCard title="Unscheduled"     value={0}             icon={Clock}    color="orange" />
+        <KpiCard title="Time Slots"      value={error || loading ? '—' : slots.length}  icon={Calendar} color="indigo" />
+        <KpiCard title="Arenas Used"     value={error || loading ? '—' : uniqueArenas}  icon={MapPin}   color="blue"   />
       </div>
 
       {loading ? (
         <div className="flex justify-center py-20">
           <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
         </div>
+      ) : error ? (
+        <div role="alert"><Card className="text-sm text-red-300">
+          <p>{error}</p>
+          <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
+        </Card></div>
       ) : slots.length === 0 ? (
         <Card className="text-center py-16">
           <Calendar className="w-12 h-12 text-gray-600 mx-auto mb-3" />
@@ -164,25 +168,17 @@ export default function SchedulePage() {
               <thead>
                 <tr>
                   <th>Time</th><th>Duration</th><th>Arena</th><th>Category</th>
-                  <th>Round</th><th>Teams</th><th>Judge</th><th></th>
+                  <th>Round</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {slots.map(slot => (
                   <tr key={slot.id}>
-                    <td><span className="font-mono font-bold text-white">{slot.time}</span></td>
-                    <td><span className="text-xs text-gray-400">{slot.duration}min</span></td>
-                    <td><span className="font-mono text-xs text-indigo-400">{slot.arena}</span></td>
-                    <td><CategoryBadge code={slot.category} /></td>
-                    <td><span className="text-xs text-gray-400">{slot.round}</span></td>
-                    <td>
-                      <div className="flex flex-wrap gap-1">
-                        {slot.teams.map((t, i) => (
-                          <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-gray-300">{t}</span>
-                        ))}
-                      </div>
-                    </td>
-                    <td><span className="text-xs text-gray-400">{slot.judge}</span></td>
+                    <td><span className="font-mono font-bold text-white">{slot.time ?? '—'}</span></td>
+                    <td><span className="text-xs text-gray-400">{slot.duration ? `${slot.duration}min` : '—'}</span></td>
+                    <td><span className="font-mono text-xs text-indigo-400">{slot.arena ?? '—'}</span></td>
+                    <td>{slot.category ? <CategoryBadge code={slot.category} /> : '—'}</td>
+                    <td><span className="text-xs text-gray-400">{slot.round ?? '—'}</span></td>
                     <td>
                       <Button size="sm" variant="danger" icon={Trash2} onClick={() => handleDelete(slot.id)} />
                     </td>
@@ -203,7 +199,7 @@ export default function SchedulePage() {
                 ))}
               </div>
               {HOURS.map(hour => {
-                const hourSlots = slots.filter(s => s.time.startsWith(hour.slice(0, 2)));
+                const hourSlots = slots.filter(s => s.time?.startsWith(hour.slice(0, 2)));
                 return (
                   <div key={hour} className="grid border-b border-white/5 min-h-[56px]"
                     style={{ gridTemplateColumns: `80px repeat(${Math.max(arenas.length, 1)}, 1fr)` }}>
@@ -214,8 +210,7 @@ export default function SchedulePage() {
                         <div key={arena} className="p-1.5 border-r border-white/5 last:border-0">
                           {slot && (
                             <div className="p-2 rounded-lg bg-indigo-600/20 border border-indigo-500/30 h-full">
-                              <div className="text-[10px] font-bold text-indigo-300 truncate">{slot.teams[0]}</div>
-                              <div className="text-[9px] text-gray-500 mt-0.5">{slot.round}</div>
+                              <div className="text-[10px] font-bold text-indigo-300 truncate">{slot.round ?? slot.category ?? 'Slot'}</div>
                             </div>
                           )}
                         </div>
@@ -258,10 +253,6 @@ export default function SchedulePage() {
           </div>
           <Input label="Round / Type" id="slot-round" placeholder="e.g. QF1, Attempt 1"
             value={form.round} onChange={e => setForm(f => ({ ...f, round: e.target.value }))} />
-          <Input label="Teams (comma-separated)" id="slot-teams" placeholder="Team A, Team B"
-            value={form.teams} onChange={e => setForm(f => ({ ...f, teams: e.target.value }))} />
-          <Input label="Judge" id="slot-judge" placeholder="Judge name"
-            value={form.judge} onChange={e => setForm(f => ({ ...f, judge: e.target.value }))} />
           <Input label="Event ID (optional)" id="slot-event"
             value={form.eventId} onChange={e => setForm(f => ({ ...f, eventId: e.target.value }))} />
         </div>

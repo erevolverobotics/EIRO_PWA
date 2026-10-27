@@ -1,20 +1,21 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { PageHeader, Card, Button, Badge, StatusBadge, CategoryBadge, Modal, Select } from '@/components/ui';
-import {
-  Upload, Download, CheckCircle2, AlertCircle, XCircle,
-  FileSpreadsheet, ChevronRight, RefreshCw, Loader2, Info
-} from 'lucide-react';
-import type { CategoryCode } from '@/lib/types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Papa from 'papaparse';
+import { CheckCircle2, Download, FileSpreadsheet, Info, Loader2, RefreshCw, Upload } from 'lucide-react';
+import { PageHeader, Card, Button, Badge, CategoryBadge, Select } from '@/components/ui';
+import { collection, db, getDocs, query, where } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
+import { useAuth } from '@/lib/firebase/auth-context';
+import { CATEGORY_LABELS, type CategoryCode, type ImportStatus } from '@/lib/types';
 
-type ImportStep = 'idle' | 'uploading' | 'validating' | 'preview' | 'committing' | 'done';
+type ImportStep = 'idle' | 'preview' | 'committing' | 'done';
 
 interface ParsedRow {
   rowNum: number;
-  teamRef: string;
+  teamReference: string;
   teamName: string;
-  category: CategoryCode | '';
+  categoryCode: CategoryCode | '';
   studentName: string;
   grade: string;
   section: string;
@@ -23,360 +24,337 @@ interface ParsedRow {
   errors: string[];
 }
 
-const SAMPLE_CSV = `team_reference,team_name,category_code,student_name,grade,section,project_title,coordinator_name,coordinator_phone
-T001,Robo Warriors,SUMO,Arjun Sharma,7,A,,Mrs. Priya,9876543210
-T001,Robo Warriors,SUMO,Riya Patel,7,B,,Mrs. Priya,9876543210
-T002,Eco Innovators,ECO_CITY,Aditya Kumar,8,A,Smart Waste Bin,Mrs. Priya,9876543210
-T002,Eco Innovators,ECO_CITY,Sneha Rao,8,B,Smart Waste Bin,Mrs. Priya,9876543210
-T002,Eco Innovators,ECO_CITY,Vikram Singh,8,A,Smart Waste Bin,Mrs. Priya,9876543210
-T003,Maze Masters,MAZE,Pooja Nair,9,A,,Mrs. Priya,9876543210
-T003,Maze Masters,MAZE,Rahul Gupta,9,B,,Mrs. Priya,9876543210
-T004,BadCategory,INVALID,Student X,7,A,,Mrs. Priya,9876543210`;
+interface Season { id: string; name?: string; year?: number; phase?: string; }
+interface ImportJob {
+  id: string;
+  seasonId?: string;
+  status?: ImportStatus;
+  counts?: { totalRows?: number; validRows?: number; invalidRows?: number; teamsCreated?: number; studentsCreated?: number };
+  createdAt?: { toDate?: () => Date } | string;
+}
 
-// Simulated parse result
-const MOCK_PARSED: ParsedRow[] = [
-  { rowNum: 2, teamRef: 'T001', teamName: 'Robo Warriors', category: 'SUMO', studentName: 'Arjun Sharma', grade: '7', section: 'A', projectTitle: '', valid: true, errors: [] },
-  { rowNum: 3, teamRef: 'T001', teamName: 'Robo Warriors', category: 'SUMO', studentName: 'Riya Patel', grade: '7', section: 'B', projectTitle: '', valid: true, errors: [] },
-  { rowNum: 4, teamRef: 'T002', teamName: 'Eco Innovators', category: 'ECO_CITY', studentName: 'Aditya Kumar', grade: '8', section: 'A', projectTitle: 'Smart Waste Bin', valid: true, errors: [] },
-  { rowNum: 5, teamRef: 'T002', teamName: 'Eco Innovators', category: 'ECO_CITY', studentName: 'Sneha Rao', grade: '8', section: 'B', projectTitle: 'Smart Waste Bin', valid: true, errors: [] },
-  { rowNum: 6, teamRef: 'T002', teamName: 'Eco Innovators', category: 'ECO_CITY', studentName: 'Vikram Singh', grade: '8', section: 'A', projectTitle: 'Smart Waste Bin', valid: true, errors: [] },
-  { rowNum: 7, teamRef: 'T003', teamName: 'Maze Masters', category: 'MAZE', studentName: 'Pooja Nair', grade: '9', section: 'A', projectTitle: '', valid: true, errors: [] },
-  { rowNum: 8, teamRef: 'T003', teamName: 'Maze Masters', category: 'MAZE', studentName: 'Rahul Gupta', grade: '9', section: 'B', projectTitle: '', valid: true, errors: [] },
-  { rowNum: 9, teamRef: 'T004', teamName: 'BadCategory', category: '', studentName: 'Student X', grade: '7', section: 'A', projectTitle: '', valid: false, errors: ['Invalid category code "INVALID". Allowed: SUMO, MAZE, WALL, ECO_CITY, NEXTGEN_FACTORY, INNOVATOR_JUNIOR, INNOVATOR_SENIOR'] },
-];
+const CATEGORIES = Object.keys(CATEGORY_LABELS) as CategoryCode[];
+const TEMPLATE = [
+  'team_reference,team_name,category_code,student_name,grade,section,project_title,coordinator_name,coordinator_phone',
+  'T001,Example Team,SUMO,Student One,7,A,,,',
+  'T001,Example Team,SUMO,Student Two,7,B,,,',
+].join('\n');
+const REQUIRED_HEADERS = ['team_reference', 'team_name', 'category_code', 'student_name', 'grade'];
 
-// Group parsed rows into teams
-function groupTeams(rows: ParsedRow[]) {
-  const teams: Record<string, { ref: string; name: string; category: CategoryCode | ''; members: ParsedRow[]; valid: boolean }> = {};
-  for (const row of rows) {
-    if (!teams[row.teamRef]) {
-      teams[row.teamRef] = { ref: row.teamRef, name: row.teamName, category: row.category, members: [], valid: true };
-    }
-    teams[row.teamRef].members.push(row);
-    if (!row.valid) teams[row.teamRef].valid = false;
-  }
-  return Object.values(teams);
+function groupRows(rows: ParsedRow[]) {
+  const groups = new Map<string, ParsedRow[]>();
+  rows.forEach(row => {
+    const group = groups.get(row.teamReference) || [];
+    group.push(row);
+    groups.set(row.teamReference, group);
+  });
+  return [...groups.entries()].map(([reference, members]) => ({
+    reference,
+    name: members[0]?.teamName || 'Unnamed team',
+    category: members[0]?.categoryCode || '',
+    members,
+    valid: members.every(member => member.valid),
+  }));
+}
+
+function downloadCsv(filename: string, rows: Record<string, string>[]) {
+  const blob = new Blob([Papa.unparse(rows)], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function BulkUploadPage() {
+  const { user, roles } = useAuth();
+  const schoolId = roles.find(role => role.role === 'SCHOOL_COORDINATOR' && role.active)?.scopeId;
   const [step, setStep] = useState<ImportStep>('idle');
   const [fileName, setFileName] = useState('');
+  const [rows, setRows] = useState<ParsedRow[]>([]);
+  const [seasons, setSeasons] = useState<Season[]>([]);
+  const [seasonId, setSeasonId] = useState('');
+  const [jobs, setJobs] = useState<ImportJob[]>([]);
+  const [jobId, setJobId] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [errorRows, setErrorRows] = useState<ParsedRow[]>([]);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [jobId, setJobId] = useState('JOB-XXXXXX');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!schoolId || schoolId === 'unassigned' || !user) return;
+    try {
+      const [seasonSnap, jobSnap] = await Promise.all([
+        getDocs(query(collection(db, 'seasons'), where('phase', '==', 'REGISTRATION_OPEN'))),
+        getDocs(query(collection(db, 'importJobs'), where('uploaderUid', '==', user.uid))),
+      ]);
+      const activeSeasons = seasonSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as Omit<Season, 'id'>) }));
+      setError('');
+      setSeasons(activeSeasons);
+      setSeasonId(current => activeSeasons.some(season => season.id === current) ? current : activeSeasons.length === 1 ? activeSeasons[0].id : '');
+      setJobs(jobSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as Omit<ImportJob, 'id'>) })));
+    } catch (loadError) {
+      console.error(loadError);
+      setError('Import setup could not be loaded. Check your school assignment and Firestore permissions, then retry.');
+    } finally {
+      setLoading(false);
+    }
+  }, [schoolId, user]);
+
   useEffect(() => {
-    setJobId('JOB-' + Math.random().toString(36).slice(2, 8).toUpperCase());
-  }, []);
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
-  const teams = groupTeams(MOCK_PARSED);
-  const validTeams = teams.filter(t => t.valid);
-  const invalidTeams = teams.filter(t => !t.valid);
-  const allErrors = MOCK_PARSED.filter(r => !r.valid);
+  const groups = useMemo(() => groupRows(rows), [rows]);
+  const validGroups = groups.filter(group => group.valid);
+  const invalidRows = rows.filter(row => !row.valid);
+  const validRows = rows.filter(row => row.valid);
 
-  const handleFile = useCallback((file: File) => {
-    if (!file.name.endsWith('.csv')) { alert('Please upload a .csv file'); return; }
-    if (file.size > 5 * 1024 * 1024) { alert('File size must be under 5MB'); return; }
+  const handleFile = async (file: File) => {
+    setError('');
+    setStep('idle');
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setError('Choose a .csv file.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('CSV must be 5MB or smaller.');
+      return;
+    }
     setFileName(file.name);
-    setStep('uploading');
-    setTimeout(() => {
-      setStep('validating');
-      setTimeout(() => {
-        setErrorRows(allErrors);
-        setStep('preview');
-      }, 1500);
-    }, 1000);
-  }, [allErrors]);
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    setIdempotencyKey(crypto.randomUUID());
+    try {
+      const text = await file.text();
+      const parsed = Papa.parse<Record<string, string>>(text, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        transformHeader: header => header.trim().toLowerCase(),
+        transform: value => value.trim(),
+      });
+      const headers = parsed.meta.fields || [];
+      const missingHeaders = REQUIRED_HEADERS.filter(header => !headers.includes(header));
+      if (missingHeaders.length > 0) {
+        setError(`Missing required CSV column(s): ${missingHeaders.join(', ')}`);
+        return;
+      }
+      if (parsed.errors.length > 0) {
+        setError(`CSV could not be parsed: ${parsed.errors[0].message}`);
+        return;
+      }
+      const parsedRows: ParsedRow[] = parsed.data.map((data, index) => {
+        const categoryValue = data.category_code?.toUpperCase() || '';
+        const categoryCode = CATEGORIES.includes(categoryValue as CategoryCode) ? categoryValue as CategoryCode : '';
+        const row: ParsedRow = {
+          rowNum: index + 2,
+          teamReference: data.team_reference || '',
+          teamName: data.team_name || '',
+          categoryCode,
+          studentName: data.student_name || '',
+          grade: data.grade || '',
+          section: data.section || '',
+          projectTitle: data.project_title || '',
+          valid: true,
+          errors: [],
+        };
+        if (!row.teamReference) row.errors.push('team_reference is required');
+        if (!row.teamName) row.errors.push('team_name is required');
+        if (!row.categoryCode) row.errors.push(`Unknown category code "${categoryValue}"`);
+        if (!row.studentName) row.errors.push('student_name is required');
+        if (!row.grade) row.errors.push('grade is required');
+        row.valid = row.errors.length === 0;
+        return row;
+      });
+      const references = new Map<string, ParsedRow[]>();
+      parsedRows.forEach(row => {
+        if (!row.teamReference) return;
+        const group = references.get(row.teamReference) || [];
+        group.push(row);
+        references.set(row.teamReference, group);
+      });
+      references.forEach(group => {
+        const distinctCategories = new Set(group.map(row => row.categoryCode));
+        const distinctNames = new Set(group.map(row => row.teamName.toLowerCase()));
+        if (distinctCategories.size > 1 || distinctNames.size > 1) {
+          group.forEach(row => {
+            row.valid = false;
+            row.errors.push('Rows sharing a team_reference must use the same team name and category');
+          });
+        }
+      });
+      if (parsedRows.length === 0) {
+        setError('The CSV contains no student rows.');
+        return;
+      }
+      setRows(parsedRows);
+      setStep('preview');
+    } catch (parseError) {
+      console.error(parseError);
+      setError('The CSV file could not be read. Save it as UTF-8 and retry.');
+    }
   };
 
-  const handleCommit = () => {
-    setConfirmOpen(false);
+  const commit = async () => {
+    if (!schoolId || !user || !seasonId || !idempotencyKey || validRows.length === 0) return;
+    setSaving(true);
+    setError('');
     setStep('committing');
-    setTimeout(() => setStep('done'), 2000);
+    try {
+      const response = await callEiroFunction<
+        { schoolId: string; seasonId: string; rows: Omit<ParsedRow, 'valid' | 'errors' | 'rowNum'>[]; idempotencyKey: string },
+        { jobId?: string; importJobId?: string; status?: string }
+      >('commitTeamImport', {
+        schoolId,
+        seasonId,
+        rows: validRows.map(({ teamReference, teamName, categoryCode, studentName, grade, section, projectTitle }) => ({
+          teamReference, teamName, categoryCode, studentName, grade, section, projectTitle,
+        })),
+        idempotencyKey,
+      });
+      setJobId(response.jobId || response.importJobId || 'Submitted');
+      setStep('done');
+      await load();
+    } catch (commitError) {
+      console.error(commitError);
+      setError(commitError instanceof Error ? commitError.message : 'Import could not be committed. Verify that commitTeamImport is deployed and accepts this request.');
+      setStep('preview');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const downloadTemplate = () => {
-    const blob = new Blob([SAMPLE_CSV], { type: 'text/csv' });
+    const blob = new Blob([TEMPLATE], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'eiro_team_template.csv'; a.click();
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'eiro_team_template.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadErrors = () => downloadCsv('eiro_import_errors.csv', invalidRows.map(row => ({
+    row_number: String(row.rowNum),
+    team_reference: row.teamReference,
+    team_name: row.teamName,
+    category_code: row.categoryCode,
+    student_name: row.studentName,
+    grade: row.grade,
+    errors: row.errors.join('; '),
+  })));
+
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragOver(false);
+    const file = event.dataTransfer.files[0];
+    if (file) void handleFile(file);
   };
 
   return (
     <div className="space-y-6 animate-fade-in-up max-w-5xl">
-      <PageHeader
-        title="Bulk CSV Team Registration"
-        subtitle="S05B — Upload a CSV to register multiple teams at once"
-        actions={
-          <Button variant="secondary" size="sm" icon={Download} onClick={downloadTemplate}>
-            Download Template
-          </Button>
-        }
-      />
+      <PageHeader title="Bulk CSV Team Registration" subtitle="Parse a CSV, review the rows and submit a confirmed import" actions={<Button variant="secondary" size="sm" icon={Download} onClick={downloadTemplate}>Download Template</Button>} />
 
-      {/* Step indicator */}
-      <div className="flex items-center gap-2">
-        {(['Upload', 'Validate', 'Preview', 'Commit', 'Done'] as const).map((label, i) => {
-          const stepIdx = ['idle', 'uploading', 'validating', 'preview', 'committing', 'done'].indexOf(step);
-          const active = i === stepIdx - (step === 'uploading' ? 1 : 0);
-          const done = i < stepIdx;
-          return (
-            <div key={label} className="flex items-center gap-2">
-              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${
-                done ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
-                active ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40' :
-                'bg-white/5 text-gray-600 border border-white/10'
-              }`}>
-                {done && <CheckCircle2 className="w-3 h-3" />}
-                {label}
-              </div>
-              {i < 4 && <ChevronRight className="w-3 h-3 text-gray-700" />}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Done state */}
-      {step === 'done' && (
-        <Card className="text-center py-12">
-          <CheckCircle2 className="w-16 h-16 text-green-400 mx-auto mb-4" />
-          <h3 className="text-2xl font-bold text-white mb-2">Import Completed!</h3>
-          <p className="text-gray-400 mb-2">Job ID: <span className="font-mono text-indigo-400">{jobId}</span></p>
-          <p className="text-gray-400 mb-6">
-            <span className="text-green-400 font-semibold">{validTeams.length} teams</span> and{' '}
-            <span className="text-green-400 font-semibold">{MOCK_PARSED.filter(r => r.valid).length} students</span> registered successfully.
-          </p>
-          {invalidTeams.length > 0 && (
-            <p className="text-sm text-yellow-400 mb-6">{invalidTeams.length} team(s) were skipped due to errors. Download the error report to fix and re-upload.</p>
-          )}
-          <div className="flex gap-3 justify-center">
-            <Button variant="secondary" icon={Download}>Download Error Report</Button>
-            <Button icon={RefreshCw} onClick={() => setStep('idle')}>Upload Another</Button>
-          </div>
-        </Card>
-      )}
-
-      {/* Upload area */}
-      {(step === 'idle' || step === 'uploading') && (
+      {!schoolId || schoolId === 'unassigned' ? (
+        <Card className="flex items-start gap-3"><Info className="w-5 h-5 text-blue-400 mt-0.5" /><div><p className="font-medium text-white">School scope not assigned</p><p className="text-sm text-gray-400 mt-1">Ask an administrator to assign this account to a school before uploading registrations.</p></div></Card>
+      ) : error && step !== 'preview' ? (
         <>
-          <Card>
-            <div
-              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 ${
-                dragOver ? 'border-indigo-500 bg-indigo-600/10' : 'border-white/10 hover:border-indigo-500/40'
-              }`}
-            >
-              {step === 'uploading' ? (
-                <div className="space-y-4">
-                  <Loader2 className="w-10 h-10 text-indigo-400 mx-auto animate-spin" />
-                  <p className="text-white font-medium">Uploading {fileName}…</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="w-16 h-16 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mx-auto">
-                    <FileSpreadsheet className="w-8 h-8 text-indigo-400" />
-                  </div>
-                  <div>
-                    <p className="text-white font-semibold mb-1">Drop your CSV file here</p>
-                    <p className="text-sm text-gray-500">or</p>
-                  </div>
-                  <label className="cursor-pointer">
-                    <span className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-xl text-sm transition-colors inline-block">
-                      Choose CSV File
-                    </span>
-                    <input type="file" accept=".csv" className="hidden" onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }} />
-                  </label>
-                  <p className="text-xs text-gray-600">Max 5MB · UTF-8 encoding · One row per student</p>
-                </div>
-              )}
-            </div>
-          </Card>
+          <div role="alert"><Card className="text-sm text-red-300">{error}</Card></div>
+          {step === 'idle' && <UploadPanel dragOver={dragOver} onDragOver={() => setDragOver(true)} onDragLeave={() => setDragOver(false)} onDrop={handleDrop} onFile={file => void handleFile(file)} />}
+        </>
+      ) : loading ? (
+        <Card className="text-center text-gray-400">Loading import setup…</Card>
+      ) : (
+        <>
+          {error && <div role="alert"><Card className="text-sm text-red-300">{error}</Card></div>}
+          {seasons.length === 0 ? (
+            <Card className="text-center py-10"><p className="font-medium text-gray-300">Registration is not open for a season</p><p className="text-sm text-gray-500 mt-2">An active registration season is required before an import can be submitted.</p></Card>
+          ) : seasons.length > 1 ? (
+            <Card><Select label="Registration season" id="season" value={seasonId} onChange={event => setSeasonId(event.target.value)} options={[{ value: '', label: '— Select season —' }, ...seasons.map(season => ({ value: season.id, label: season.name || String(season.year || season.id) }))]} /></Card>
+          ) : null}
 
-          <Card>
-            <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-              <Info className="w-4 h-4 text-indigo-400" /> CSV Format Guide
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="eiro-table text-xs">
-                <thead><tr>
-                  <th>Column</th><th>Required</th><th>Description</th>
-                </tr></thead>
-                <tbody>
-                  {[
-                    ['team_reference', '✓', 'Unique ID grouping students into one team (e.g. T001). Same value = same team.'],
-                    ['team_name', '✓', 'Display name of the team'],
-                    ['category_code', '✓', 'One of: SUMO, MAZE, WALL, ECO_CITY, NEXTGEN_FACTORY, INNOVATOR_JUNIOR, INNOVATOR_SENIOR'],
-                    ['student_name', '✓', 'Full name of each student'],
-                    ['grade', '✓', 'Grade/class number'],
-                    ['section', '', 'Section letter (optional)'],
-                    ['project_title', 'For project cats', 'Required for ECO_CITY, NEXTGEN_FACTORY, INNOVATOR_*'],
-                    ['coordinator_name', '', 'Team coordinator/teacher name'],
-                    ['coordinator_phone', '', 'Contact phone number'],
-                  ].map(([col, req, desc]) => (
-                    <tr key={col}>
-                      <td><code className="font-mono text-indigo-400">{col}</code></td>
-                      <td>{req ? <Badge variant="success" size="sm">{req}</Badge> : <span className="text-gray-600">–</span>}</td>
-                      <td className="text-gray-500">{desc}</td>
-                    </tr>
+          {step === 'idle' && <UploadPanel dragOver={dragOver} onDragOver={() => setDragOver(true)} onDragLeave={() => setDragOver(false)} onDrop={handleDrop} onFile={file => void handleFile(file)} />}
+          {step === 'preview' && (
+            <div className="space-y-4">
+              <Card className="flex flex-wrap items-center justify-between gap-3">
+                <div><p className="font-semibold text-white">{fileName}</p><p className="text-xs text-gray-500 mt-1">{rows.length} parsed student rows · backend performs authoritative eligibility and duplicate checks</p></div>
+                <Button variant="secondary" icon={RefreshCw} onClick={() => { setStep('idle'); setRows([]); setError(''); }}>Choose another CSV</Button>
+              </Card>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <Summary title="Rows" value={rows.length} />
+                <Summary title="Locally valid" value={validRows.length} />
+                <Summary title="Needs correction" value={invalidRows.length} />
+                <Summary title="Teams" value={groups.length} />
+              </div>
+              <Card padding="none">
+                <div className="px-5 py-4 border-b border-white/5"><h2 className="font-semibold text-white">Team preview ({groups.length})</h2></div>
+                <div className="divide-y divide-white/5">
+                  {groups.map(group => (
+                    <div key={group.reference || group.name} className="px-5 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2"><span className="font-mono text-xs text-gray-500">{group.reference || 'No team reference'}</span><span className="font-semibold text-white">{group.name}</span>{group.category && <CategoryBadge code={group.category as CategoryCode} />}</div>
+                        <Badge variant={group.valid ? 'success' : 'danger'}>{group.members.length} student{group.members.length === 1 ? '' : 's'}</Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {group.members.map(row => <p key={row.rowNum} className={`text-xs ${row.valid ? 'text-gray-400' : 'text-red-300'}`}>Row {row.rowNum}: {row.studentName || 'Unnamed student'} · Grade {row.grade || '—'}{row.errors.length ? ` — ${row.errors.join('; ')}` : ''}</p>)}
+                      </div>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              </Card>
+              {invalidRows.length > 0 && <Button variant="secondary" icon={Download} onClick={downloadErrors}>Download error CSV</Button>}
+              <div className="flex justify-end">
+                <Button icon={CheckCircle2} onClick={() => void commit()} loading={saving} disabled={!seasonId || !idempotencyKey || validGroups.length === 0}>Commit {validGroups.length} valid team{validGroups.length === 1 ? '' : 's'}</Button>
+              </div>
             </div>
+          )}
+          {step === 'committing' && <Card className="text-center py-12"><Loader2 className="w-8 h-8 text-indigo-400 animate-spin mx-auto mb-3" /><p className="font-semibold text-white">Submitting import…</p><p className="text-sm text-gray-500 mt-2">The trusted backend validates and commits the registrations.</p></Card>}
+          {step === 'done' && (
+            <Card className="text-center py-10">
+              <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-3" />
+              <h2 className="text-xl font-bold text-white">Import submitted</h2>
+              <p className="text-sm text-gray-400 mt-2">Job: <span className="font-mono text-indigo-300">{jobId}</span></p>
+              <p className="text-sm text-gray-500 mt-1">{validGroups.length} teams · {validRows.length} valid student rows submitted.</p>
+              <Button className="mt-5" onClick={() => { setRows([]); setFileName(''); setJobId(''); setIdempotencyKey(''); setStep('idle'); }}>Upload another CSV</Button>
+            </Card>
+          )}
+          <Card>
+            <h2 className="font-semibold text-white mb-3">Recent imports</h2>
+            {jobs.length === 0 ? <p className="text-sm text-gray-500">No prior import jobs.</p> : (
+              <div className="divide-y divide-white/5">
+                {jobs.map(job => <div key={job.id} className="py-3 flex flex-wrap items-center justify-between gap-2">
+                  <div><p className="text-sm font-mono text-indigo-300">{job.id}</p><p className="text-xs text-gray-500">{job.counts?.teamsCreated ?? 0} teams · {job.counts?.studentsCreated ?? 0} students</p></div>
+                  <Badge variant={job.status === 'COMPLETED' ? 'success' : job.status === 'NEEDS_CORRECTION' || job.status === 'PARTIAL_FAILED' ? 'danger' : 'info'}>{job.status || 'UNKNOWN'}</Badge>
+                </div>)}
+              </div>
+            )}
           </Card>
         </>
       )}
-
-      {/* Validating */}
-      {step === 'validating' && (
-        <Card className="text-center py-16">
-          <Loader2 className="w-10 h-10 text-indigo-400 mx-auto animate-spin mb-4" />
-          <p className="text-white font-semibold">Validating {fileName}…</p>
-          <p className="text-sm text-gray-500 mt-1">Checking categories, grades, duplicates and team sizes</p>
-        </Card>
-      )}
-
-      {/* Preview */}
-      {step === 'preview' && (
-        <div className="space-y-4">
-          {/* Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <Card className="text-center">
-              <div className="text-2xl font-black text-white mb-1">{MOCK_PARSED.length}</div>
-              <div className="text-xs text-gray-500">Total Rows</div>
-            </Card>
-            <Card className="text-center">
-              <div className="text-2xl font-black text-green-400 mb-1">{MOCK_PARSED.filter(r => r.valid).length}</div>
-              <div className="text-xs text-gray-500">Valid Rows</div>
-            </Card>
-            <Card className="text-center">
-              <div className="text-2xl font-black text-red-400 mb-1">{allErrors.length}</div>
-              <div className="text-xs text-gray-500">Error Rows</div>
-            </Card>
-            <Card className="text-center">
-              <div className="text-2xl font-black text-indigo-400 mb-1">{teams.length}</div>
-              <div className="text-xs text-gray-500">Teams Grouped</div>
-            </Card>
-          </div>
-
-          {/* Valid teams */}
-          <Card padding="none">
-            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
-              <h3 className="font-semibold text-white text-sm flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-                Valid Teams ({validTeams.length})
-              </h3>
-            </div>
-            <div className="divide-y divide-white/5">
-              {validTeams.map(team => (
-                <div key={team.ref} className="px-6 py-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-xs text-gray-500">{team.ref}</span>
-                      <span className="font-semibold text-white text-sm">{team.name}</span>
-                      {team.category && <CategoryBadge code={team.category as CategoryCode} />}
-                    </div>
-                    <Badge variant="success">{team.members.length} student{team.members.length > 1 ? 's' : ''}</Badge>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {team.members.map((m, i) => (
-                      <span key={i} className="text-xs px-2 py-1 rounded-lg bg-white/5 text-gray-400">
-                        {m.studentName} · Gr {m.grade}{m.section}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Errors */}
-          {allErrors.length > 0 && (
-            <Card padding="none">
-              <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
-                <h3 className="font-semibold text-white text-sm flex items-center gap-2">
-                  <XCircle className="w-4 h-4 text-red-400" />
-                  Errors — {allErrors.length} rows skipped
-                </h3>
-                <Button variant="secondary" size="sm" icon={Download}>Error CSV</Button>
-              </div>
-              <div className="divide-y divide-white/5">
-                {allErrors.map(row => (
-                  <div key={row.rowNum} className="px-6 py-3">
-                    <div className="flex items-start gap-3">
-                      <span className="text-xs font-mono text-gray-600 mt-0.5">Row {row.rowNum}</span>
-                      <div>
-                        <span className="text-sm text-white">{row.teamName} / {row.studentName}</span>
-                        {row.errors.map((e, i) => (
-                          <p key={i} className="text-xs text-red-400 mt-0.5">{e}</p>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          <div className="flex gap-3 justify-end">
-            <Button variant="secondary" onClick={() => setStep('idle')} icon={RefreshCw}>Re-upload</Button>
-            <Button variant="secondary" icon={Download}>Download Error Report</Button>
-            <Button
-              icon={CheckCircle2}
-              onClick={() => setConfirmOpen(true)}
-              disabled={validTeams.length === 0}
-            >
-              Commit {validTeams.length} Valid Team{validTeams.length > 1 ? 's' : ''}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Committing */}
-      {step === 'committing' && (
-        <Card className="text-center py-16">
-          <Loader2 className="w-10 h-10 text-indigo-400 mx-auto animate-spin mb-4" />
-          <p className="text-white font-semibold">Committing registrations…</p>
-          <p className="text-sm text-gray-500 mt-1">Creating teams and student records. This may take a moment.</p>
-        </Card>
-      )}
-
-      {/* Confirm modal */}
-      <Modal
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        title="Confirm Import"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-            <Button onClick={handleCommit} icon={CheckCircle2}>Confirm & Import</Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-            <p className="text-sm text-indigo-300 font-medium mb-2">You are about to import:</p>
-            <ul className="text-sm text-gray-400 space-y-1">
-              <li>• {validTeams.length} teams</li>
-              <li>• {MOCK_PARSED.filter(r => r.valid).length} students</li>
-              {invalidTeams.length > 0 && <li className="text-yellow-400">• {invalidTeams.length} teams will be skipped (errors)</li>}
-            </ul>
-          </div>
-          <div className="p-3 rounded-lg bg-white/[0.03] border border-white/5">
-            <p className="text-xs text-gray-500">
-              Import Job ID: <span className="font-mono text-indigo-400">{jobId}</span><br />
-              This operation is idempotent — retrying will not create duplicate teams.
-              For paid categories, invoices will be generated but payment must be verified by an Event Coordinator.
-            </p>
-          </div>
-        </div>
-      </Modal>
     </div>
   );
+}
+
+function UploadPanel({ dragOver, onDragOver, onDragLeave, onDrop, onFile }: {
+  dragOver: boolean;
+  onDragOver: () => void;
+  onDragLeave: () => void;
+  onDrop: (event: React.DragEvent) => void;
+  onFile: (file: File) => void;
+}) {
+  return (
+    <Card>
+      <div onDragOver={event => { event.preventDefault(); onDragOver(); }} onDragLeave={onDragLeave} onDrop={onDrop} className={`border-2 border-dashed rounded-2xl p-10 text-center ${dragOver ? 'border-indigo-500 bg-indigo-600/10' : 'border-white/10'}`}>
+        <FileSpreadsheet className="w-10 h-10 text-indigo-400 mx-auto mb-3" />
+        <p className="font-semibold text-white">Drop your CSV file here</p>
+        <label className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm cursor-pointer"><Upload className="w-4 h-4" />Choose CSV<input type="file" accept=".csv,text/csv" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) onFile(file); event.target.value = ''; }} /></label>
+        <p className="text-xs text-gray-500 mt-3">UTF-8 · maximum 5MB · one row per student</p>
+      </div>
+    </Card>
+  );
+}
+
+function Summary({ title, value }: { title: string; value: number }) {
+  return <Card className="text-center"><p className="text-2xl font-black text-white">{value}</p><p className="text-xs text-gray-500 mt-1">{title}</p></Card>;
 }

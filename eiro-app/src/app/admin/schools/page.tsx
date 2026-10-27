@@ -1,21 +1,23 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { PageHeader, Card, Button, Input, StatusBadge, CategoryBadge, Badge, Modal, Textarea } from '@/components/ui';
+import { PageHeader, Card, Button, StatusBadge, CategoryBadge, Modal, Textarea } from '@/components/ui';
 import { Search, CheckCircle2, XCircle, AlertCircle, Eye, Loader2, RefreshCw, School } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import {
-  collection, getDocs, doc, updateDoc, query, where, serverTimestamp,
+  collection, getDocs,
 } from 'firebase/firestore';
 import type { CategoryCode, RegistrationState } from '@/lib/types';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Team {
   id: string;
+  registrationId: string;
   name: string;
-  category: CategoryCode;
+  category?: CategoryCode;
   state: RegistrationState;
   members: number;
   feeStatus: string;
@@ -28,8 +30,8 @@ interface Team {
 
 export default function SchoolApprovalsPage() {
   const [teams, setTeams]           = useState<Team[]>([]);
-  const [schools, setSchools]       = useState<Record<string, { name: string; code: string }>>({});
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState('');
   const [search, setSearch]         = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
@@ -47,35 +49,53 @@ export default function SchoolApprovalsPage() {
       const schoolMap: Record<string, { name: string; code: string }> = {};
       schoolSnap.docs.forEach(d => {
         const data = d.data();
-        schoolMap[d.id] = { name: data.name ?? d.id, code: data.code ?? '' };
+        schoolMap[d.id] = { name: data.name ?? d.id, code: data.schoolCode ?? '' };
       });
-      setSchools(schoolMap);
-
-      // Load teams (registrations that need approval)
-      const teamSnap = await getDocs(collection(db, 'teams'));
-      const data: Team[] = teamSnap.docs.map(d => ({
-        id: d.id,
-        name: '',
-        category: 'SUMO' as CategoryCode,
-        state: 'SUBMITTED' as RegistrationState,
-        members: 0,
-        feeStatus: 'PENDING',
-        schoolId: '',
-        ...(d.data() as Partial<Team>),
-        schoolName: schoolMap[d.data().schoolId]?.name ?? 'Unknown School',
-        schoolCode: schoolMap[d.data().schoolId]?.code ?? '',
-      }));
+      const [registrationSnap, teamSnap, studentSnap] = await Promise.all([
+        getDocs(collection(db, 'registrations')),
+        getDocs(collection(db, 'teams')),
+        getDocs(collection(db, 'students')),
+      ]);
+      const teamsById = new Map(teamSnap.docs.map(d => [d.id, d.data()]));
+      const membersByTeam = new Map<string, number>();
+      studentSnap.docs.forEach(d => {
+        const teamId = d.data().teamId as string | undefined;
+        if (teamId) membersByTeam.set(teamId, (membersByTeam.get(teamId) ?? 0) + 1);
+      });
+      const data: Team[] = registrationSnap.docs.map(d => {
+        const registration = d.data();
+        const teamId = registration.teamId as string;
+        const team = teamsById.get(teamId) ?? {};
+        const schoolId = registration.schoolId as string;
+        return {
+          id: teamId,
+          registrationId: d.id,
+          name: (team.teamName as string | undefined) ?? (team.displayTeamCode as string | undefined) ?? teamId,
+          category: team.categoryCode as CategoryCode | undefined,
+          state: registration.state as RegistrationState,
+          members: membersByTeam.get(teamId) ?? 0,
+          feeStatus: (registration.feeStatus as string | undefined) ?? '—',
+          schoolId,
+          schoolName: schoolMap[schoolId]?.name ?? schoolId,
+          schoolCode: schoolMap[schoolId]?.code ?? '',
+        };
+      });
 
       setTeams(data);
+      setError('');
     } catch (e) {
       console.error(e);
+      setError('Registrations could not be loaded. District administrator authorization may be required; retry after checking permissions.');
       toast.error('Failed to load registrations. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   // ── Action handlers ─────────────────────────────────────────────────────────
 
@@ -83,18 +103,17 @@ export default function SchoolApprovalsPage() {
     if (!selectedTeam || !actionType) return;
     setSaving(true);
 
-    const stateMap: Record<string, RegistrationState> = {
-      approve:    'APPROVED',
-      reject:     'REJECTED',
-      correction: 'CORRECTION_REQUIRED',
+    const decisionMap = {
+      approve: 'APPROVE',
+      reject: 'REJECT',
+      correction: 'REQUEST_CORRECTION',
     };
 
     try {
-      await updateDoc(doc(db, 'teams', selectedTeam.id), {
-        state: stateMap[actionType],
-        correctionNote: actionType === 'correction' ? correctionNote : '',
-        reviewedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      await callEiroFunction<Record<string, unknown>, unknown>('reviewRegistration', {
+        registrationId: selectedTeam.registrationId,
+        decision: decisionMap[actionType],
+        ...(actionType === 'correction' ? { correctionNote: correctionNote.trim() } : {}),
       });
 
       toast.success(`Team ${actionType === 'approve' ? 'approved' : actionType === 'reject' ? 'rejected' : 'sent for correction'}.`);
@@ -125,7 +144,7 @@ export default function SchoolApprovalsPage() {
     <div className="space-y-6">
       <PageHeader
         title="School & Team Approvals"
-        subtitle={`${pendingCount} teams pending review`}
+        subtitle={error ? 'Registration data unavailable' : `${pendingCount} teams pending review`}
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={load} disabled={loading}>Refresh</Button>
         }
@@ -140,7 +159,7 @@ export default function SchoolApprovalsPage() {
           { label: 'Approved',        count: teams.filter(t => t.state === 'APPROVED').length,             color: 'text-green-400'  },
         ].map(s => (
           <Card key={s.label} className="text-center">
-            <div className={`text-3xl font-black ${s.color} mb-1`}>{s.count}</div>
+            <div className={`text-3xl font-black ${s.color} mb-1`}>{error || loading ? '—' : s.count}</div>
             <div className="text-xs text-gray-500">{s.label}</div>
           </Card>
         ))}
@@ -179,11 +198,16 @@ export default function SchoolApprovalsPage() {
         <div className="flex justify-center py-20">
           <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
         </div>
+      ) : error ? (
+        <div role="alert"><Card className="text-sm text-red-300">
+          <p>{error}</p>
+          <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
+        </Card></div>
       ) : filtered.length === 0 ? (
         <Card className="text-center py-16">
           <School className="w-12 h-12 text-gray-600 mx-auto mb-3" />
           <p className="text-gray-400 font-medium">No teams found</p>
-          <p className="text-gray-600 text-sm mt-1">Try a different filter or wait for school coordinators to register teams.</p>
+          <p className="text-gray-600 text-sm mt-1">Try a different filter or wait for school coordinators to submit registrations.</p>
         </Card>
       ) : (
         <div className="space-y-3">
@@ -193,7 +217,7 @@ export default function SchoolApprovalsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="font-semibold text-white">{t.name}</span>
-                    <CategoryBadge code={t.category} />
+                    {t.category && <CategoryBadge code={t.category} />}
                     <StatusBadge status={t.state} />
                   </div>
                   <p className="text-xs text-gray-500">
@@ -253,7 +277,7 @@ export default function SchoolApprovalsPage() {
           <div className="space-y-3 text-sm text-gray-300">
             <p><span className="text-gray-500">Team:</span> {selectedTeam.name}</p>
             <p><span className="text-gray-500">School:</span> {selectedTeam.schoolName}</p>
-            <p><span className="text-gray-500">Category:</span> {selectedTeam.category}</p>
+            <p><span className="text-gray-500">Category:</span> {selectedTeam.category ?? '—'}</p>
             <p><span className="text-gray-500">Members:</span> {selectedTeam.members}</p>
             <p><span className="text-gray-500">Status:</span> <StatusBadge status={selectedTeam.state} /></p>
             <p><span className="text-gray-500">Fee:</span> {selectedTeam.feeStatus}</p>

@@ -70,7 +70,9 @@ export default function SignupPage() {
 
         <div className="glass rounded-2xl p-8 border border-white/10">
           <h2 className="text-2xl font-bold text-white mb-1">Create Account</h2>
-          <p className="text-gray-400 text-sm mb-6">Register as a School Coordinator to manage your teams</p>
+          <p className="text-gray-400 text-sm mb-6">
+            Create a School Coordinator account, then submit your school details for administrator approval before registering teams.
+          </p>
 
           {error && (
             <div className="flex items-start gap-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20 mb-5">

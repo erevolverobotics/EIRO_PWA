@@ -1,208 +1,110 @@
 'use client';
 
-import { useState } from 'react';
-import { PageHeader, Card, Button, Badge, StatusBadge, CategoryBadge } from '@/components/ui';
-import { QrCode, Search, CheckCircle2, Users, AlertCircle, UserCheck } from 'lucide-react';
-import type { CategoryCode, AttendanceStatus } from '@/lib/types';
+import { useEffect, useMemo, useState } from 'react';
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { PageHeader, Card, Button, Badge } from '@/components/ui';
+import { QrCode, Search, CheckCircle2, AlertCircle } from 'lucide-react';
+import type { AttendanceStatus, CategoryCode } from '@/lib/types';
+import { getAll } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
-const MOCK_TEAM = {
-  code: 'EIRO-2026-041',
-  name: 'Robo Warriors',
-  category: 'SUMO' as CategoryCode,
-  school: 'DAV Public School',
-  event: 'District Preliminary — Chennai',
-  arena: 'Arena A – Sumo Ring 1',
-  slot: '09:00 AM',
-  status: 'APPROVED',
-  members: [
-    { id: 'S001', name: 'Arjun Sharma', grade: '7A', attendance: 'NOT_MARKED' as AttendanceStatus },
-    { id: 'S002', name: 'Riya Patel', grade: '7B', attendance: 'NOT_MARKED' as AttendanceStatus },
-  ],
-};
+type Team = { id: string; displayTeamCode: string; teamName: string; schoolId: string; categoryCode: CategoryCode };
+type Entry = { id: string; teamId: string; eventId: string; entryStatus: string; mergedIntoEntryId?: string };
+type Membership = { id: string; teamId: string; studentId: string; status?: string };
+type Attendance = { entryId: string; studentId: string; status: AttendanceStatus };
+
+function CheckInPageContent() {
+  const params = useSearchParams();
+  const [query, setQuery] = useState(params.get('team') ?? '');
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [memberships, setMemberships] = useState<Membership[]>([]);
+  const [records, setRecords] = useState<Attendance[]>([]);
+  const [team, setTeam] = useState<Team | null>(null);
+  const [entryId, setEntryId] = useState('');
+  const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    Promise.all([getAll<Team>('teams'), getAll<Entry>('stageEntries'), getAll<Membership>('teamMemberships'), getAll<Attendance & { id: string }>('studentAttendance')])
+      .then(([teamRows, entryRows, memberRows, attendanceRows]) => { setTeams(teamRows); setEntries(entryRows); setMemberships(memberRows); setRecords(attendanceRows); })
+      .catch(() => setError('Check-in data could not be loaded. Check your venue/check-in role.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const selectedEntry = entries.find(entry => entry.id === entryId);
+  const members = useMemo(() => team ? memberships.filter(member => member.teamId === team.id && member.status !== 'INACTIVE') : [], [team, memberships]);
+  const presentCount = members.filter(member => attendance[member.studentId] === 'PRESENT').length;
+  const findTeam = () => {
+    const result = teams.find(item => item.displayTeamCode.toLowerCase() === query.trim().toLowerCase());
+    setTeam(result ?? null);
+    const teamEntries = result ? entries.filter(item => item.teamId === result.id && !item.mergedIntoEntryId) : [];
+    const chosen = teamEntries.length === 1 ? teamEntries[0] : undefined;
+    setEntryId(chosen?.id ?? '');
+    if (!result) { setError('No team matches this display code.'); return; }
+    if (teamEntries.length === 0) { setError('No active event entry exists for this team.'); return; }
+    setError('');
+    if (chosen) {
+      const saved: Record<string, AttendanceStatus> = {};
+      memberships.filter(member => member.teamId === result.id && member.status !== 'INACTIVE').forEach(member => { saved[member.studentId] = 'NOT_MARKED'; });
+      records.filter(record => record.entryId === chosen.id).forEach(record => { saved[record.studentId] = record.status; });
+      setAttendance(saved);
+    }
+  };
+  const selectEntry = (id: string) => {
+    setEntryId(id);
+    const saved: Record<string, AttendanceStatus> = {};
+    memberships.filter(member => member.teamId === team?.id && member.status !== 'INACTIVE').forEach(member => { saved[member.studentId] = 'NOT_MARKED'; });
+    records.filter(record => record.entryId === id).forEach(record => { saved[record.studentId] = record.status; });
+    setAttendance(saved);
+  };
+  const save = async () => {
+    if (!team || !selectedEntry || members.length === 0) return;
+    if (members.some(member => !['PRESENT', 'ABSENT'].includes(attendance[member.studentId]))) { toast.error('Mark every roster member present or absent.'); return; }
+    setSaving(true);
+    try {
+      await callEiroFunction<Record<string, unknown>, unknown>('checkInTeam', { entryId: selectedEntry.id, teamId: team.id, eventId: selectedEntry.eventId });
+      for (const member of members) {
+        await callEiroFunction<Record<string, unknown>, unknown>('recordStudentAttendance', {
+          entryId: selectedEntry.id, teamId: team.id, eventId: selectedEntry.eventId,
+          studentId: member.studentId, status: attendance[member.studentId],
+        });
+      }
+      toast.success('Check-in and attendance recorded.');
+      setRecords(old => [...old.filter(item => item.entryId !== selectedEntry.id), ...members.map(member => ({ entryId: selectedEntry.id, studentId: member.studentId, status: attendance[member.studentId] }))]);
+    } catch {
+      toast.error('The check-in or attendance call failed. Refresh to confirm persisted records.');
+    } finally { setSaving(false); }
+  };
+  return <div className="max-w-xl space-y-6 animate-fade-in-up">
+    <PageHeader title="Team Check-in" subtitle="Look up a registered team and persist authorized attendance" />
+    <Card>
+      <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><QrCode className="w-4 h-4 text-indigo-400" />Search by team display code</h3>
+      <div className="flex gap-2"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && findTeam()} placeholder="Enter team code" className="eiro-input flex-1" /><Button icon={Search} onClick={findTeam} disabled={loading}>Search</Button></div>
+      {loading && <p className="text-xs text-gray-400 mt-3">Loading team roster…</p>}
+      {error && <p role="alert" className="text-sm text-red-400 mt-3">{error}</p>}
+    </Card>
+    {team && <Card>
+      <h3 className="font-bold text-white text-lg">{team.teamName}</h3>
+      <p className="text-xs font-mono text-gray-500">{team.displayTeamCode}</p>
+      <p className="text-sm text-gray-400 mt-2">School ID: {team.schoolId} · Category: {team.categoryCode}</p>
+      {entries.filter(item => item.teamId === team.id && !item.mergedIntoEntryId).length > 1 && <label className="block text-sm text-gray-400 mt-4">Event entry<select className="eiro-input mt-1" value={entryId} onChange={event => selectEntry(event.target.value)}><option value="">Select entry</option>{entries.filter(item => item.teamId === team.id && !item.mergedIntoEntryId).map(item => <option key={item.id} value={item.id}>{item.eventId} · {item.entryStatus}</option>)}</select></label>}
+      {!selectedEntry ? <p className="text-sm text-yellow-400 mt-4">Select an active event entry to continue.</p> : <>
+        <div className="mt-4 space-y-3">{members.length === 0 ? <p className="text-gray-400">No active roster membership records were found.</p> : members.map(member => <div key={member.studentId} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-white/5"><span className="text-sm text-white">{member.studentId}</span><div className="flex gap-2">{(['PRESENT', 'ABSENT'] as AttendanceStatus[]).map(status => <button key={status} onClick={() => setAttendance(old => ({ ...old, [member.studentId]: status }))} className={`px-3 py-2 rounded-lg text-xs border ${attendance[member.studentId] === status ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-white/5 border-white/10 text-gray-400'}`}>{status}</button>)}</div></div>)}</div>
+        <div className="flex justify-between items-center mt-4"><Badge variant={presentCount === members.length && members.length ? 'success' : 'warning'}>{presentCount}/{members.length} present</Badge><Button icon={CheckCircle2} onClick={() => void save()} loading={saving} disabled={loading || members.length === 0}>Save Check-in</Button></div>
+      </>}
+      <p className="text-xs text-gray-500 mt-4 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0" />QR camera scanning is unavailable; use the printed team display code.</p>
+    </Card>}
+  </div>;
+}
 
 export default function CheckInPage() {
-  const [query, setQuery] = useState('');
-  const [foundTeam, setFoundTeam] = useState<typeof MOCK_TEAM | null>(null);
-  const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
-  const [saved, setSaved] = useState(false);
-
-  const handleSearch = () => {
-    if (query.toUpperCase() === 'EIRO-2026-041' || query === 'PE-2026-041') {
-      setFoundTeam(MOCK_TEAM);
-      const init: Record<string, AttendanceStatus> = {};
-      MOCK_TEAM.members.forEach(m => { init[m.id] = 'NOT_MARKED'; });
-      setAttendance(init);
-      setSaved(false);
-    } else {
-      toast.error('Team not found. Verify the code and try again.');
-    }
-  };
-
-  const mark = (id: string, status: AttendanceStatus) => {
-    setAttendance(a => ({ ...a, [id]: status }));
-    setSaved(false);
-  };
-
-  const handleSave = () => {
-    const unmarked = Object.values(attendance).filter(a => a === 'NOT_MARKED').length;
-    if (unmarked > 0) {
-      toast.error(`${unmarked} student(s) not yet marked. Please mark all.`);
-      return;
-    }
-    setSaved(true);
-    toast.success('Attendance saved successfully!');
-  };
-
-  const presentCount = Object.values(attendance).filter(a => a === 'PRESENT').length;
-  const total = foundTeam?.members.length ?? 0;
-
   return (
-    <div className="max-w-xl space-y-6 animate-fade-in-up">
-      <PageHeader title="QR Team Check-in" subtitle="V02/V04 — Scan or search team, then mark individual attendance" />
-
-      {/* Scanner UI */}
-      <Card>
-        <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
-          <QrCode className="w-4 h-4 text-indigo-400" /> Scan or Search Team
-        </h3>
-
-        {/* QR Scan area */}
-        <div className="border-2 border-dashed border-white/10 rounded-2xl p-8 text-center mb-4 hover:border-indigo-500/30 transition-colors cursor-pointer">
-          <QrCode className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-          <p className="text-sm text-gray-500 mb-1">Camera QR Scan</p>
-          <p className="text-xs text-gray-600">Tap to open camera (requires permission)</p>
-          <Button size="sm" variant="outline" className="mt-3" onClick={() => {
-            // In production: trigger camera API for QR scan
-            setQuery('EIRO-2026-041');
-            toast('Demo: Using code EIRO-2026-041', { icon: 'ℹ️' });
-          }}>
-            Simulate Scan
-          </Button>
-        </div>
-
-        {/* Manual search */}
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-            <input
-              type="text"
-              placeholder="Enter Team Code or Pass ID…"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              className="eiro-input pl-9"
-            />
-          </div>
-          <Button icon={Search} onClick={handleSearch}>Search</Button>
-        </div>
-      </Card>
-
-      {/* Team found */}
-      {foundTeam && (
-        <>
-          <Card>
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-bold text-white text-lg">{foundTeam.name}</h3>
-                  <StatusBadge status={foundTeam.status} />
-                </div>
-                <p className="text-sm text-gray-400">{foundTeam.school}</p>
-                <p className="font-mono text-xs text-gray-600 mt-0.5">{foundTeam.code}</p>
-              </div>
-              <CategoryBadge code={foundTeam.category} />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-sm mb-4">
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <p className="text-xs text-gray-500 mb-0.5">Event</p>
-                <p className="text-white text-xs">{foundTeam.event}</p>
-              </div>
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <p className="text-xs text-gray-500 mb-0.5">Arena · Slot</p>
-                <p className="text-white text-xs">{foundTeam.arena} · {foundTeam.slot}</p>
-              </div>
-            </div>
-
-            {/* Attendance status summary */}
-            <div className={`p-3 rounded-xl mb-4 border flex items-center justify-between ${
-              presentCount === total ? 'bg-green-500/10 border-green-500/20' :
-              presentCount === 0 ? 'bg-gray-500/10 border-gray-600' :
-              'bg-yellow-500/10 border-yellow-500/20'
-            }`}>
-              <div className="flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-green-400" />
-                <span className="text-sm text-white font-medium">{presentCount}/{total} Present</span>
-              </div>
-              {presentCount < 2 && (
-                <div className="flex items-center gap-1 text-xs text-yellow-400">
-                  <AlertCircle className="w-3 h-3" />
-                  May be short-staffed
-                </div>
-              )}
-            </div>
-          </Card>
-
-          {/* Individual student attendance */}
-          <Card>
-            <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
-              <Users className="w-4 h-4 text-indigo-400" /> Student Attendance
-            </h3>
-            <div className="space-y-3">
-              {foundTeam.members.map(m => {
-                const status = attendance[m.id] ?? 'NOT_MARKED';
-                return (
-                  <div key={m.id} className="flex items-center justify-between p-4 rounded-xl border border-white/5 bg-white/[0.03]">
-                    <div>
-                      <p className="font-medium text-white text-sm">{m.name}</p>
-                      <p className="text-xs text-gray-500">Grade {m.grade}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => mark(m.id, 'PRESENT')}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
-                          status === 'PRESENT'
-                            ? 'bg-green-500 text-white shadow-lg shadow-green-500/20'
-                            : 'bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Present
-                      </button>
-                      <button
-                        onClick={() => mark(m.id, 'ABSENT')}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
-                          status === 'ABSENT'
-                            ? 'bg-red-500 text-white shadow-lg shadow-red-500/20'
-                            : 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20'
-                        }`}
-                      >
-                        <AlertCircle className="w-4 h-4" /> Absent
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="mt-4 flex gap-3">
-              <Button className="flex-1" icon={CheckCircle2} onClick={handleSave} disabled={saved}>
-                {saved ? 'Attendance Saved ✓' : 'Save Attendance'}
-              </Button>
-            </div>
-
-            {saved && presentCount < foundTeam.members.length && (
-              <div className="mt-3 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
-                <p className="text-xs text-yellow-400 font-medium">⚠ Team is below minimum size</p>
-                <p className="text-xs text-yellow-600 mt-0.5">
-                  {foundTeam.members.length - presentCount} member(s) absent.
-                  Consider initiating a merge or transfer request via the Merge / Transfer screen.
-                </p>
-              </div>
-            )}
-          </Card>
-        </>
-      )}
-    </div>
+    <Suspense fallback={<p className="text-center text-gray-400 py-12">Loading check-in…</p>}>
+      <CheckInPageContent />
+    </Suspense>
   );
 }

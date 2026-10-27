@@ -1,17 +1,40 @@
 'use client';
 
-import { useState } from 'react';
-import { PageHeader, Card, Button, Select, Input, Badge, CategoryBadge, Modal, Textarea } from '@/components/ui';
-import { Plus, Minus, Trash2, ChevronRight, AlertCircle, CheckCircle2, Users } from 'lucide-react';
-import type { CategoryCode } from '@/lib/types';
+import { useEffect, useState } from 'react';
+import { PageHeader, Card, Button, Badge, CategoryBadge, Modal } from '@/components/ui';
+import { Plus, Trash2, ChevronRight, AlertCircle, CheckCircle2, Users } from 'lucide-react';
+import type { CategoryCode, Season } from '@/lib/types';
 import { CATEGORY_LABELS } from '@/lib/types';
 import toast from 'react-hot-toast';
+import { getAll, getOne } from '@/lib/firebase/firestore';
+import { callEiroFunction } from '@/lib/firebase/functions';
+import { useAuth } from '@/lib/firebase/auth-context';
+import { useRouter } from 'next/navigation';
 
 const CATEGORIES: CategoryCode[] = ['SUMO', 'MAZE', 'WALL', 'ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'];
 
 interface Member { id: string; name: string; grade: string; section: string; }
+interface CategoryRegistrationSettings {
+  minTeam: number;
+  maxTeam: number;
+  feeAmount: number;
+  hasFee: boolean;
+  rounds: number;
+}
+type CategoryConfiguration = Partial<Record<CategoryCode, CategoryRegistrationSettings>>;
+type SubmitRegistrationRequest = {
+  seasonId: string;
+  categoryCode: CategoryCode;
+  teamName: string;
+  projectTitle?: string;
+  members: { name: string; grade: string; section?: string }[];
+  state: 'DRAFT' | 'SUBMITTED';
+};
 
 export default function RegisterTeamPage() {
+  const { user, roles } = useAuth();
+  const router = useRouter();
+  const schoolId = roles.find(r => r.role === 'SCHOOL_COORDINATOR' && r.active)?.scopeId;
   const [category, setCategory] = useState<CategoryCode | ''>('');
   const [teamName, setTeamName] = useState('');
   const [projectTitle, setProjectTitle] = useState('');
@@ -19,11 +42,43 @@ export default function RegisterTeamPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [seasons, setSeasons] = useState<(Season & { id: string })[]>([]);
+  const [categoryConfiguration, setCategoryConfiguration] = useState<CategoryConfiguration | null>(null);
+  const [seasonId, setSeasonId] = useState('');
+  const [loadingSeasons, setLoadingSeasons] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      getAll<Season>('seasons'),
+      getOne<CategoryConfiguration>('config', 'categories'),
+    ])
+      .then(([allSeasons, configuredCategories]) => {
+        if (!active) return;
+        const openSeasons = allSeasons.filter(season => season.phase === 'REGISTRATION_OPEN');
+        setSeasons(openSeasons);
+        setCategoryConfiguration(configuredCategories);
+        if (openSeasons.length === 1) setSeasonId(openSeasons[0].id);
+      })
+      .catch(error => {
+        console.error('Failed to load registration seasons', error);
+        if (active) setLoadError('Unable to load open registration seasons. Please try again later.');
+      })
+      .finally(() => {
+        if (active) setLoadingSeasons(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  const categorySettings = category ? categoryConfiguration?.[category] : undefined;
   const needsProject = ['ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'].includes(category);
 
   const addMember = () => {
-    if (members.length < 6) setMembers(m => [...m, { id: Date.now().toString(), name: '', grade: '', section: '' }]);
+    if (categorySettings && members.length < categorySettings.maxTeam) {
+      setMembers(m => [...m, { id: Date.now().toString(), name: '', grade: '', section: '' }]);
+    }
   };
   const removeMember = (id: string) => {
     if (members.length > 1) setMembers(m => m.filter(x => x.id !== id));
@@ -35,6 +90,13 @@ export default function RegisterTeamPage() {
   const validate = () => {
     const e: Record<string, string> = {};
     if (!category) e.category = 'Please select a category';
+    if (category && !categorySettings) e.category = 'Registration settings are not available for this category';
+    if (categorySettings && members.length < categorySettings.minTeam) {
+      e.members = `At least ${categorySettings.minTeam} students are required`;
+    }
+    if (categorySettings && members.length > categorySettings.maxTeam) {
+      e.members = `No more than ${categorySettings.maxTeam} students are allowed`;
+    }
     if (!teamName.trim()) e.teamName = 'Team name is required';
     if (needsProject && !projectTitle.trim()) e.projectTitle = 'Project title is required for this category';
     members.forEach((m, i) => {
@@ -50,10 +112,58 @@ export default function RegisterTeamPage() {
     setConfirmOpen(true);
   };
 
-  const handleConfirm = () => {
+  const saveRegistration = async (state: 'DRAFT' | 'SUBMITTED') => {
+    if (!user) {
+      toast.error('Sign in before saving a registration.');
+      return;
+    }
+    if (!schoolId || schoolId === 'unassigned') {
+      toast.error('Your account is not assigned to a school. Contact an administrator.');
+      return;
+    }
+    if (!seasonId) {
+      toast.error('Select an open registration season before saving.');
+      return;
+    }
+    if (!category) {
+      toast.error('Select a category before saving.');
+      return;
+    }
+    if (!categorySettings) {
+      toast.error('This category is not configured yet. Contact an administrator.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const request: SubmitRegistrationRequest = {
+        seasonId,
+        categoryCode: category,
+        teamName: teamName.trim(),
+        ...(projectTitle.trim() ? { projectTitle: projectTitle.trim() } : {}),
+        members: members.map(member => ({
+          name: member.name.trim(),
+          grade: member.grade,
+          ...(member.section.trim() ? { section: member.section.trim() } : {}),
+        })),
+        state,
+      };
+      await callEiroFunction<SubmitRegistrationRequest, { teamId: string; registrationId: string }>(
+        'submitRegistration',
+        request
+      );
+      toast.success(state === 'DRAFT' ? 'Draft saved.' : 'Registration submitted for review.');
+      if (state === 'SUBMITTED') setSubmitted(true);
+    } catch (error) {
+      console.error('Failed to save team registration', error);
+      toast.error('Registration could not be saved. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleConfirm = async () => {
     setConfirmOpen(false);
-    setSubmitted(true);
-    toast.success('Registration submitted for review!');
+    await saveRegistration('SUBMITTED');
   };
 
   if (submitted) {
@@ -62,11 +172,11 @@ export default function RegisterTeamPage() {
         <Card className="text-center py-12">
           <CheckCircle2 className="w-16 h-16 text-green-400 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-white mb-2">Team Submitted!</h2>
-          <p className="text-gray-400 mb-2">Your registration is now under review.</p>
-          <p className="text-sm text-gray-500 mb-6">You'll be notified once it's approved or if corrections are needed.</p>
+          <p className="text-gray-400 mb-2">Your registration was submitted and is awaiting review.</p>
+          <p className="text-sm text-gray-500 mb-6">You&apos;ll be notified once it&apos;s approved or if corrections are needed.</p>
           <div className="flex gap-3 justify-center">
             <Button variant="secondary" onClick={() => setSubmitted(false)}>Register Another</Button>
-            <Button onClick={() => window.location.href = '/coordinator/registrations'}>View Registrations</Button>
+            <Button onClick={() => router.push('/coordinator/registrations')}>View Registrations</Button>
           </div>
         </Card>
       </div>
@@ -77,14 +187,29 @@ export default function RegisterTeamPage() {
     <div className="max-w-2xl space-y-6 animate-fade-in-up">
       <PageHeader title="Register Team" subtitle="S05 — Add a new team manually" />
 
-      {/* Season context */}
-      <div className="p-4 rounded-2xl bg-indigo-900/20 border border-indigo-500/20 flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium text-white">EIRO 2026 · District Preliminaries</p>
-          <p className="text-xs text-gray-400">DAV Public School · Chennai District</p>
-        </div>
-        <Badge variant="success">Registration Open</Badge>
-      </div>
+      <Card>
+        <label htmlFor="registration-season" className="block text-sm font-medium text-gray-300 mb-2">Registration season</label>
+        {loadingSeasons ? (
+          <p className="text-sm text-gray-500">Loading open seasons…</p>
+        ) : loadError ? (
+          <p className="text-sm text-red-400">{loadError}</p>
+        ) : seasons.length === 0 ? (
+          <p className="text-sm text-gray-500">There are no open registration seasons.</p>
+        ) : seasons.length === 1 ? (
+          <p className="text-sm text-white">{seasons[0].name}</p>
+        ) : (
+          <select id="registration-season" className="eiro-input" value={seasonId} onChange={e => setSeasonId(e.target.value)}>
+            <option value="">Select a season</option>
+            {seasons.map(season => <option key={season.id} value={season.id}>{season.name}</option>)}
+          </select>
+        )}
+        {(!schoolId || schoolId === 'unassigned') && (
+          <p className="text-sm text-amber-400 mt-3">Your coordinator account has not been assigned to a school. Contact an administrator before registering a team.</p>
+        )}
+        {category && !loadingSeasons && !loadError && !categoryConfiguration?.[category] && (
+          <p className="text-sm text-amber-400 mt-3">This category has no saved registration configuration. Contact an administrator.</p>
+        )}
+      </Card>
 
       {/* Category Selection */}
       <Card>
@@ -121,7 +246,7 @@ export default function RegisterTeamPage() {
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-1.5">Team Name *</label>
             <input type="text" className={`eiro-input ${errors.teamName ? 'border-red-500/60' : ''}`}
-              placeholder="e.g. Robo Warriors" value={teamName} onChange={e => { setTeamName(e.target.value); setErrors(ex => ({ ...ex, teamName: '' })); }} />
+              placeholder="Enter team name" value={teamName} onChange={e => { setTeamName(e.target.value); setErrors(ex => ({ ...ex, teamName: '' })); }} />
             {errors.teamName && <p className="text-xs text-red-400 mt-1">{errors.teamName}</p>}
           </div>
 
@@ -129,7 +254,7 @@ export default function RegisterTeamPage() {
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1.5">Project Title *</label>
               <input type="text" className={`eiro-input ${errors.projectTitle ? 'border-red-500/60' : ''}`}
-                placeholder="e.g. Smart Waste Management Bot" value={projectTitle}
+                placeholder="Enter project title" value={projectTitle}
                 onChange={e => { setProjectTitle(e.target.value); setErrors(ex => ({ ...ex, projectTitle: '' })); }} />
               {errors.projectTitle && <p className="text-xs text-red-400 mt-1">{errors.projectTitle}</p>}
             </div>
@@ -145,8 +270,12 @@ export default function RegisterTeamPage() {
             Team Members
           </h3>
           <div className="flex items-center gap-2">
-            <Badge variant={members.length >= 2 ? 'success' : 'danger'}>{members.length} student{members.length !== 1 ? 's' : ''}</Badge>
-            <Button size="sm" variant="secondary" icon={Plus} onClick={addMember} disabled={members.length >= 6}>Add</Button>
+            <Badge variant={categorySettings && members.length >= categorySettings.minTeam ? 'success' : 'danger'}>
+              {members.length} student{members.length !== 1 ? 's' : ''}
+              {categorySettings ? ` (min ${categorySettings.minTeam}, max ${categorySettings.maxTeam})` : ''}
+            </Badge>
+            <Button size="sm" variant="secondary" icon={Plus} onClick={addMember}
+              disabled={!categorySettings || members.length >= categorySettings.maxTeam}>Add</Button>
           </div>
         </div>
         <p className="text-xs text-gray-500 mb-4 flex items-center gap-1">
@@ -193,12 +322,15 @@ export default function RegisterTeamPage() {
             </div>
           ))}
         </div>
+        {errors.members && <p className="text-xs text-red-400 mt-2">{errors.members}</p>}
       </Card>
 
       {/* Submit */}
       <div className="flex gap-3 justify-end pb-4">
-        <Button variant="secondary">Save Draft</Button>
-        <Button icon={ChevronRight} iconPosition="right" onClick={handleSubmit}>
+        <Button variant="secondary" disabled={saving || loadingSeasons || !schoolId || schoolId === 'unassigned' || !seasonId || !category || !categoryConfiguration?.[category]} onClick={() => {
+          if (validate()) void saveRegistration('DRAFT');
+        }}>Save Draft</Button>
+        <Button icon={ChevronRight} iconPosition="right" disabled={saving || loadingSeasons || !schoolId || schoolId === 'unassigned' || !seasonId || !category || !categoryConfiguration?.[category]} onClick={handleSubmit}>
           Review & Submit
         </Button>
       </div>
@@ -208,7 +340,7 @@ export default function RegisterTeamPage() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setConfirmOpen(false)}>Back</Button>
-            <Button icon={CheckCircle2} onClick={handleConfirm}>Submit Registration</Button>
+            <Button icon={CheckCircle2} disabled={saving} onClick={handleConfirm}>Submit Registration</Button>
           </>
         }
       >

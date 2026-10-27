@@ -17,7 +17,7 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from './config';
+import { assertFirebaseConfigured, db } from './config';
 
 // ─── Re-export commonly used firebase/firestore primitives ─────────────────
 export {
@@ -30,12 +30,14 @@ export { db };
 
 /** Fetch all documents from a collection as typed objects (includes document ID as `id`). */
 export async function getAll<T>(col: string): Promise<(T & { id: string })[]> {
+  assertFirebaseConfigured();
   const snap = await getDocs(collection(db, col));
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as T) }));
 }
 
 /** Fetch a single document by ID. Returns null if it doesn't exist. */
 export async function getOne<T>(col: string, id: string): Promise<(T & { id: string }) | null> {
+  assertFirebaseConfigured();
   const snap = await getDoc(doc(db, col, id));
   if (!snap.exists()) return null;
   return { id: snap.id, ...(snap.data() as T) };
@@ -43,6 +45,7 @@ export async function getOne<T>(col: string, id: string): Promise<(T & { id: str
 
 /** Add a new document to a collection (auto-generated ID). Returns the new document's ID. */
 export async function addItem<T extends object>(col: string, data: T): Promise<string> {
+  assertFirebaseConfigured();
   const ref = await addDoc(collection(db, col), {
     ...data,
     createdAt: serverTimestamp(),
@@ -53,6 +56,7 @@ export async function addItem<T extends object>(col: string, data: T): Promise<s
 
 /** Set (create or overwrite) a document with a specific ID. */
 export async function setItem<T extends object>(col: string, id: string, data: T): Promise<void> {
+  assertFirebaseConfigured();
   await setDoc(doc(db, col, id), {
     ...data,
     createdAt: serverTimestamp(),
@@ -62,6 +66,7 @@ export async function setItem<T extends object>(col: string, id: string, data: T
 
 /** Update specific fields of an existing document. */
 export async function updateItem<T extends object>(col: string, id: string, data: Partial<T>): Promise<void> {
+  assertFirebaseConfigured();
   await updateDoc(doc(db, col, id), {
     ...data,
     updatedAt: serverTimestamp(),
@@ -70,6 +75,7 @@ export async function updateItem<T extends object>(col: string, id: string, data
 
 /** Delete a document. */
 export async function deleteItem(col: string, id: string): Promise<void> {
+  assertFirebaseConfigured();
   await deleteDoc(doc(db, col, id));
 }
 
@@ -79,6 +85,7 @@ export async function queryByField<T>(
   field: string,
   value: unknown
 ): Promise<(T & { id: string })[]> {
+  assertFirebaseConfigured();
   const snap = await getDocs(query(collection(db, col), where(field, '==', value)));
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as T) }));
 }
@@ -99,6 +106,7 @@ export async function assignRole(params: {
   scopeId: string;
   createdBy: string;
 }): Promise<void> {
+  assertFirebaseConfigured();
   const docId = `${params.uid}_${params.role}`;
   await setDoc(doc(db, 'roleAssignments', docId), {
     uid: params.uid,
@@ -113,6 +121,7 @@ export async function assignRole(params: {
 
 /** Revoke a role assignment by setting active = false. */
 export async function revokeRole(uid: string, role: string): Promise<void> {
+  assertFirebaseConfigured();
   const docId = `${uid}_${role}`;
   await updateDoc(doc(db, 'roleAssignments', docId), {
     active: false,

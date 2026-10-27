@@ -100,18 +100,19 @@ eiro-app/
 ```
 Season Setup (Admin)
   └─► District Events Created
-        └─► School Registration Opens
-              └─► Teams Register (Coordinator)
-                    └─► Bulk CSV Upload OR Manual Entry
-                          └─► Payment Verification (Cash/UPI/Bank)
-                                └─► Admin Approves Schools & Teams
-                                      └─► Training Days (Day 1 & Day 2)
-                                            └─► Competition Day
-                                                  ├─► QR Check-in
-                                                  ├─► Eligibility Checks
-                                                  ├─► Scoring (Matches / Timed Runs / Rubric)
-                                                  ├─► Head Judge Verification & Lock
-                                                  └─► Results Publication + Certificates
+        └─► Coordinator Creates Account + Submits School Application
+              └─► District / Super Admin Reviews and Approves School
+                    └─► Registration Opens
+                          └─► Coordinator Registers Teams (CSV or manual entry)
+                                └─► Payment Verification (Cash/UPI/Bank)
+                                      └─► Admin Approves Teams
+                                            └─► Training Days (Day 1 & Day 2)
+                                                  └─► Competition Day
+                                                        ├─► QR Check-in
+                                                        ├─► Eligibility Checks
+                                                        ├─► Scoring (Matches / Timed Runs / Rubric)
+                                                        ├─► Head Judge Verification & Lock
+                                                        └─► Results Publication + Certificates
 ```
 
 ---
@@ -124,8 +125,25 @@ firebase deploy --only firestore:rules
 firebase deploy --only firestore:indexes
 ```
 
+### Configure and deploy Cloud Functions
+
+Set the required `NEXT_PUBLIC_FIREBASE_*` values in `.env.local` for the web app.
+Protected writes (including payment verification, attendance, score submission/locking,
+team adjustments, and result publication) are handled by the trusted Functions backend;
+they must not be written directly from the browser.
+
+```bash
+npm --prefix functions install
+npm --prefix functions run build
+firebase deploy --only functions
+```
+
+Select the intended Firebase project with the Firebase CLI before deployment. The app
+does not use demo data when Firebase is unconfigured; Firestore screens report a
+configuration or access error instead.
+
 ### Required Firestore Collections
-- `seasons` · `events` · `schools` · `teams` · `students`
+- `seasons` · `events` · `schoolApplications` · `schools` · `teams` · `students`
 - `stageEntries` · `payments` · `trainingAttendance`
 - `scorecards` · `rankings` · `teamAdjustments` · `auditLog`
 

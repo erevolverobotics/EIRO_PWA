@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { PageHeader, Card, Button, Badge, Modal, Input } from '@/components/ui';
+import { PageHeader, Card, Button, Modal, Input } from '@/components/ui';
 import { Plus, Trophy, Calendar, Archive, ChevronRight, Settings, CheckCircle2, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import {
@@ -14,14 +14,19 @@ import toast from 'react-hot-toast';
 interface Season {
   id: string;
   name: string;
-  year: number;
+  year?: number;
   phase: string;
-  regOpen: string;
-  regClose: string;
-  districts: number;
-  teams: number;
-  events: number;
-  categories: number;
+  registrationWindowStart?: unknown;
+  registrationWindowEnd?: unknown;
+}
+
+function formatDate(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && 'toDate' in value &&
+    typeof value.toDate === 'function') {
+    return value.toDate().toLocaleDateString();
+  }
+  return '';
 }
 
 const PHASE_COLORS: Record<string, string> = {
@@ -42,6 +47,7 @@ const EMPTY_FORM = { name: '', year: String(new Date().getFullYear() + 1), regOp
 export default function SeasonsPage() {
   const [seasons, setSeasons]       = useState<Season[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState('');
   const [saving, setSaving]         = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [phaseTarget, setPhaseTarget] = useState<Season | null>(null);
@@ -53,39 +59,50 @@ export default function SeasonsPage() {
     setLoading(true);
     try {
       const snap = await getDocs(collection(db, 'seasons'));
-      const data: Season[] = snap.docs.map(d => ({
-        id: d.id,
-        name: '', year: 0, phase: 'SETUP', regOpen: '', regClose: '',
-        districts: 0, teams: 0, events: 0, categories: 0,
-        ...(d.data() as Partial<Season>),
-      }));
-      data.sort((a, b) => b.year - a.year);
+      const data: Season[] = snap.docs.map(d => {
+        const source = d.data();
+        return {
+          id: d.id,
+          name: typeof source.name === 'string' ? source.name : d.id,
+          year: typeof source.year === 'number' ? source.year : undefined,
+          phase: typeof source.phase === 'string' ? source.phase : 'UNKNOWN',
+          registrationWindowStart: source.registrationWindowStart,
+          registrationWindowEnd: source.registrationWindowEnd,
+        };
+      });
+      data.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
       setSeasons(data);
+      setError('');
     } catch (e) {
       console.error(e);
+      setError('Season records could not be loaded. Check administrator authorization and retry.');
       toast.error('Failed to load seasons. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   // ── Create season ───────────────────────────────────────────────────────────
 
   const handleCreate = async () => {
     if (!form.name.trim()) return toast.error('Season name is required');
+    const year = Number(form.year);
+    if (!Number.isInteger(year) || year < 1) return toast.error('Enter a valid season year.');
     setSaving(true);
     try {
       await addDoc(collection(db, 'seasons'), {
         name: form.name.trim(),
-        year: parseInt(form.year, 10),
+        year,
         phase: 'SETUP',
-        regOpen: form.regOpen,
-        regClose: form.regClose,
-        districts: 0, teams: 0, events: 0, categories: 0,
+        registrationWindowStart: form.regOpen || null,
+        registrationWindowEnd: form.regClose || null,
+        publishedSettings: {},
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
       });
       toast.success('Season created!');
       setCreateOpen(false);
@@ -103,16 +120,20 @@ export default function SeasonsPage() {
 
   const advancePhase = async (season: Season) => {
     const idx = PHASES.indexOf(season.phase);
+    if (idx < 0) return toast.error('This season has an unknown phase and cannot be advanced.');
     const next = PHASES[Math.min(idx + 1, PHASES.length - 1)];
     if (next === season.phase) return toast.error('Season is already at the final phase.');
+    setSaving(true);
     try {
-      await updateDoc(doc(db, 'seasons', season.id), { phase: next, updatedAt: serverTimestamp() });
+      await updateDoc(doc(db, 'seasons', season.id), { phase: next });
       toast.success(`Season moved to ${next.replace(/_/g, ' ')}.`);
       setPhaseTarget(null);
       await load();
     } catch (e) {
       console.error(e);
       toast.error('Failed to advance phase.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -149,6 +170,11 @@ export default function SeasonsPage() {
         <div className="flex justify-center py-20">
           <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
         </div>
+      ) : error ? (
+        <div role="alert"><Card className="text-sm text-red-300">
+          <p>{error}</p>
+          <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
+        </Card></div>
       ) : seasons.length === 0 ? (
         <Card className="text-center py-16">
           <Trophy className="w-12 h-12 text-gray-600 mx-auto mb-3" />
@@ -167,25 +193,22 @@ export default function SeasonsPage() {
                   <div>
                     <div className="flex items-center gap-3 mb-1 flex-wrap">
                       <h3 className="text-lg font-bold text-white">{s.name}</h3>
-                      <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${PHASE_COLORS[s.phase] ?? PHASE_COLORS.SETUP}`}>
+                      <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${PHASE_COLORS[s.phase] ?? 'text-gray-400 bg-gray-500/10 border-gray-500/30'}`}>
                         {s.phase.replace(/_/g, ' ')}
                       </span>
                     </div>
                     <div className="flex gap-4 text-xs text-gray-500 flex-wrap">
-                      {s.regOpen && (
+                      {Boolean(s.registrationWindowStart || s.registrationWindowEnd) && (
                         <span className="flex items-center gap-1">
-                          <Calendar className="w-3 h-3" /> Reg: {s.regOpen} → {s.regClose}
+                          <Calendar className="w-3 h-3" /> Reg: {formatDate(s.registrationWindowStart) || '—'} → {formatDate(s.registrationWindowEnd) || '—'}
                         </span>
                       )}
-                      <span>{s.districts} districts</span>
-                      <span>{s.events} events</span>
-                      <span>{s.categories} categories</span>
-                      <span className="text-indigo-400 font-medium">{s.teams} teams</span>
+                      <span className="text-indigo-400 font-medium">{s.year ?? 'Year unavailable'}</span>
                     </div>
                   </div>
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                  {!['COMPLETED', 'ARCHIVED'].includes(s.phase) && (
+                  {PHASES.includes(s.phase) && !['COMPLETED', 'ARCHIVED'].includes(s.phase) && (
                     <>
                       <Button size="sm" variant="secondary" icon={Settings}
                         onClick={() => setPhaseTarget(s)}>Manage Phase</Button>
@@ -200,19 +223,6 @@ export default function SeasonsPage() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-4 gap-3">
-                {[
-                  { label: 'Districts',  value: s.districts,  color: 'text-blue-400'   },
-                  { label: 'Teams',      value: s.teams,      color: 'text-indigo-400' },
-                  { label: 'Events',     value: s.events,     color: 'text-purple-400' },
-                  { label: 'Categories', value: s.categories, color: 'text-green-400'  },
-                ].map(stat => (
-                  <div key={stat.label} className="text-center py-3 rounded-xl bg-white/[0.03] border border-white/5">
-                    <div className={`text-2xl font-black ${stat.color}`}>{stat.value}</div>
-                    <div className="text-xs text-gray-500">{stat.label}</div>
-                  </div>
-                ))}
-              </div>
             </Card>
           ))}
         </div>
@@ -263,7 +273,7 @@ export default function SeasonsPage() {
             </span>
             <div className="pt-3 space-y-2">
               <p className="text-xs text-gray-500">Phase progression:</p>
-              {PHASES.map((ph, i) => (
+              {PHASES.map(ph => (
                 <div key={ph} className={`flex items-center gap-2 text-xs ${ph === phaseTarget.phase ? 'text-white font-bold' : 'text-gray-500'}`}>
                   <span className={`w-2 h-2 rounded-full ${ph === phaseTarget.phase ? 'bg-indigo-400' : 'bg-gray-600'}`} />
                   {ph.replace(/_/g, ' ')}
