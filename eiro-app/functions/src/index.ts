@@ -491,7 +491,7 @@ export const submitRegistration = makeCallable(async (uid, data) => {
     });
     throw error;
   }
-}, "submitRegistration");
+}, "submitRegistration", "public");
 
 export const recordManualPayment = makeCallable(async (uid, data) => {
   const invoiceId = requiredString(data, "invoiceId", 150);
