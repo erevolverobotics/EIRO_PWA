@@ -1,0 +1,184 @@
+[debug] [2026-10-27T13:53:54.863Z] ----------------------------------------------------------------------
+[debug] [2026-10-27T13:53:54.866Z] Command:       C:\nvm4w\nodejs\node.exe D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\bin\firebase.js deploy --only functions:submitRegistration --project eiro-690b4
+[debug] [2026-10-27T13:53:54.867Z] CLI Version:   15.34.1
+[debug] [2026-10-27T13:53:54.867Z] Platform:      win32
+[debug] [2026-10-27T13:53:54.867Z] Node Version:  v22.17.0
+[debug] [2026-10-27T13:53:54.867Z] Detected Agent: unknown
+[debug] [2026-10-27T13:53:54.868Z] Time:          Tue Oct 27 2026 19:23:54 GMT+0530 (India Standard Time)
+[debug] [2026-10-27T13:53:54.868Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-27T13:54:34.292Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-27T13:54:34.292Z] > authorizing via signed-in user (admin@evolveroboticsindia.com)
+[debug] [2026-10-27T13:54:34.293Z] [iam] checking project eiro-690b4 for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2026-10-27T13:54:34.307Z] Checked if tokens are valid: false, expires at: 1793094508802
+[debug] [2026-10-27T13:54:34.307Z] Checked if tokens are valid: false, expires at: 1793094508802
+[debug] [2026-10-27T13:54:34.308Z] > refreshing access token with scopes: []
+[debug] [2026-10-27T13:54:34.311Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-10-27T13:54:34.311Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-10-27T13:54:34.637Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-10-27T13:54:34.637Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-10-27T13:54:34.684Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions [none]
+[debug] [2026-10-27T13:54:34.684Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions  x-goog-user-project=eiro-690b4
+[debug] [2026-10-27T13:54:34.684Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-10-27T13:54:36.282Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions 200
+[debug] [2026-10-27T13:54:36.282Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-10-27T13:54:36.283Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:36.283Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:36.283Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2026-10-27T13:54:36.283Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-10-27T13:54:37.937Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions 200
+[debug] [2026-10-27T13:54:37.937Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[info] 
+[info] === Deploying to 'eiro-690b4'...
+[info] 
+[info] i  deploying functions 
+[debug] [2026-10-27T13:54:37.943Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:37.943Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:37.943Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 [none]
+[debug] [2026-10-27T13:54:38.369Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 200
+[debug] [2026-10-27T13:54:38.370Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 {"projectNumber":"832471348196","projectId":"eiro-690b4","lifecycleState":"ACTIVE","name":"eiro","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2026-10-21T11:40:20.727Z","parent":{"type":"organization","id":"603690234826"}}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2026-10-27T13:54:38.375Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:38.375Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:38.375Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig [none]
+[debug] [2026-10-27T13:54:39.141Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig 200
+[debug] [2026-10-27T13:54:39.141Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig {"projectId":"eiro-690b4","databaseURL":"https://eiro-690b4-default-rtdb.firebaseio.com","storageBucket":"eiro-690b4.firebasestorage.app"}
+[debug] [2026-10-27T13:54:39.142Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:39.142Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:54:39.142Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs [none]
+[debug] [2026-10-27T13:54:39.700Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs 200
+[debug] [2026-10-27T13:54:39.700Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs {}
+[debug] [2026-10-27T13:54:39.702Z] Validating nodejs source
+[debug] [2026-10-27T13:54:49.727Z] checkFunctionsSDKVersion was unable to fetch information from NPM Error: spawnSync C:\Windows\system32\cmd.exe ETIMEDOUT
+    at Object.spawnSync (node:internal/child_process:1120:20)
+    at Object.spawnSync (node:child_process:869:24)
+    at Function.spawnSync [as sync] (D:\EIRO_PWA\eiro-app\functions\node_modules\cross-spawn\index.js:26:23)
+    at Object.getLatestSDKVersion (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\runtimes\node\versioning.js:57:25)
+    at Object.checkFunctionsSDKVersion (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\runtimes\node\versioning.js:79:32)
+    at Delegate.validate (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\runtimes\node\index.js:85:20)
+    at loadCodebases (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\prepare.js:529:31)
+    at async prepare (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\prepare.js:181:24)
+    at async chain (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\index.js:119:9)
+    at async deploy (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\index.js:198:9)
+[debug] [2026-10-27T13:54:49.729Z] > [functions] package.json contents: {
+  "name": "eiro-cloud-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "firebase-functions": "^7.4.0"
+  },
+  "devDependencies": {
+    "firebase-tools": "^15.34.1",
+    "typescript": "^5.9.3"
+  }
+}
+[debug] [2026-10-27T13:54:49.729Z] Building nodejs source
+[info] i  functions: Loading and analyzing source code for codebase default to determine what to deploy 
+[debug] [2026-10-27T13:54:49.733Z] Could not find functions.yaml. Must use http discovery
+[debug] [2026-10-27T13:54:49.750Z] Found firebase-functions binary at 'D:\EIRO_PWA\eiro-app\functions\node_modules\.bin\firebase-functions'
+[debug] [2026-10-27T13:54:51.407Z] Failed to call quitquitquit. This often means the server failed to start fetch failed {}
+[info] Serving at port 8396
+
+[debug] [2026-10-27T13:55:01.591Z] TypeError: fetch failed
+    at node:internal/deps/undici/undici:13510:13
+    at async Object.detectFromPort (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\runtimes\discovery\index.js:67:19)
+    at async Delegate.discoverBuild (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\runtimes\node\index.js:194:34)
+    at async loadCodebases (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\prepare.js:548:33)
+    at async prepare (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\functions\prepare.js:181:24)
+    at async chain (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\index.js:119:9)
+    at async deploy (D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\deploy\index.js:198:9)
+    at async D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\command.js:287:28
+[error] 
+[error] Error: An unexpected error has occurred.
+[debug] [2026-10-27T13:56:23.559Z] ----------------------------------------------------------------------
+[debug] [2026-10-27T13:56:23.565Z] Command:       C:\nvm4w\nodejs\node.exe D:\EIRO_PWA\eiro-app\functions\node_modules\firebase-tools\lib\bin\firebase.js deploy --only functions:submitRegistration --project eiro-690b4 --debug
+[debug] [2026-10-27T13:56:23.566Z] CLI Version:   15.34.1
+[debug] [2026-10-27T13:56:23.566Z] Platform:      win32
+[debug] [2026-10-27T13:56:23.567Z] Node Version:  v22.17.0
+[debug] [2026-10-27T13:56:23.567Z] Detected Agent: unknown
+[debug] [2026-10-27T13:56:23.568Z] Time:          Tue Oct 27 2026 19:26:23 GMT+0530 (India Standard Time)
+[debug] [2026-10-27T13:56:23.568Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-27T13:56:27.361Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-27T13:56:27.362Z] > authorizing via signed-in user (admin@evolveroboticsindia.com)
+[debug] [2026-10-27T13:56:27.363Z] [iam] checking project eiro-690b4 for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2026-10-27T13:56:27.378Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:27.379Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:27.381Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions [none]
+[debug] [2026-10-27T13:56:27.382Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions  x-goog-user-project=eiro-690b4
+[debug] [2026-10-27T13:56:27.382Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-10-27T13:56:29.028Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions 200
+[debug] [2026-10-27T13:56:29.028Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-10-27T13:56:29.029Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:29.029Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:29.030Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2026-10-27T13:56:29.030Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-10-27T13:56:30.706Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions 200
+[debug] [2026-10-27T13:56:30.707Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/eiro-690b4/serviceAccounts/eiro-690b4@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[info] 
+[info] === Deploying to 'eiro-690b4'...
+[info] 
+[info] i  deploying functions 
+[debug] [2026-10-27T13:56:30.711Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:30.712Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:30.712Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 [none]
+[debug] [2026-10-27T13:56:31.116Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 200
+[debug] [2026-10-27T13:56:31.116Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/eiro-690b4 {"projectNumber":"832471348196","projectId":"eiro-690b4","lifecycleState":"ACTIVE","name":"eiro","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2026-10-21T11:40:20.727Z","parent":{"type":"organization","id":"603690234826"}}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2026-10-27T13:56:31.120Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:31.120Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:31.121Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig [none]
+[debug] [2026-10-27T13:56:31.626Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig 200
+[debug] [2026-10-27T13:56:31.627Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/eiro-690b4/adminSdkConfig {"projectId":"eiro-690b4","databaseURL":"https://eiro-690b4-default-rtdb.firebaseio.com","storageBucket":"eiro-690b4.firebasestorage.app"}
+[debug] [2026-10-27T13:56:31.627Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:31.628Z] Checked if tokens are valid: true, expires at: 1793112873638
+[debug] [2026-10-27T13:56:31.628Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs [none]
+[debug] [2026-10-27T13:56:33.264Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs 200
+[debug] [2026-10-27T13:56:33.265Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/eiro-690b4/configs {}
+[debug] [2026-10-27T13:56:33.267Z] Validating nodejs source
+[debug] [2026-10-27T13:56:34.768Z] > [functions] package.json contents: {
+  "name": "eiro-cloud-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "firebase-functions": "^7.4.0"
+  },
+  "devDependencies": {
+    "firebase-tools": "^15.34.1",
+    "typescript": "^5.9.3"
+  }
+}
+[debug] [2026-10-27T13:56:34.768Z] Building nodejs source
+[info] i  functions: Loading and analyzing source code for codebase default to determine what to deploy 
+[debug] [2026-10-27T13:56:34.772Z] Could not find functions.yaml. Must use http discovery
+[debug] [2026-10-27T13:56:34.788Z] Found firebase-functions binary at 'D:\EIRO_PWA\eiro-app\functions\node_modules\.bin\firebase-functions'
+[info] Serving at port 8542
+
+[error] 
+[error] Error: User code failed to load. Cannot determine backend specification. Timeout after 10000. See https://firebase.google.com/docs/functions/tips#avoid_deployment_timeouts_during_initialization'
