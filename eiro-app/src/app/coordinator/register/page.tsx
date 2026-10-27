@@ -10,6 +10,7 @@ import { getAll, getOne } from '@/lib/firebase/firestore';
 import { callEiroFunction } from '@/lib/firebase/functions';
 import { useAuth } from '@/lib/firebase/auth-context';
 import { useRouter } from 'next/navigation';
+import { FirebaseError } from 'firebase/app';
 
 const CATEGORIES: CategoryCode[] = ['SUMO', 'MAZE', 'WALL', 'ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'];
 
@@ -75,6 +76,22 @@ export default function RegisterTeamPage() {
   const categorySettings = category ? categoryConfiguration?.[category] : undefined;
   const needsProject = ['ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'].includes(category);
 
+  const registrationBlocker = loadingSeasons
+    ? 'Registration settings are still loading.'
+    : loadError
+      ? 'Registration settings could not be loaded. Refresh the page and try again.'
+      : !schoolId || schoolId === 'unassigned'
+        ? 'Your coordinator account is not assigned to a school. Submit a school application and wait for approval before registering teams.'
+        : seasons.length === 0
+          ? 'There is no open registration season. Ask an administrator to open a season.'
+          : !seasonId
+            ? 'Select an open registration season before continuing.'
+            : !category
+              ? 'Select a competition category before continuing.'
+              : !categorySettings
+                ? 'This category has no saved registration settings. Ask an administrator to configure it.'
+                : '';
+
   const addMember = () => {
     if (categorySettings && members.length < categorySettings.maxTeam) {
       setMembers(m => [...m, { id: Date.now().toString(), name: '', grade: '', section: '' }]);
@@ -108,8 +125,20 @@ export default function RegisterTeamPage() {
   };
 
   const handleSubmit = () => {
+    if (registrationBlocker) {
+      toast.error(registrationBlocker);
+      return;
+    }
     if (!validate()) { toast.error('Please fix the errors before submitting'); return; }
     setConfirmOpen(true);
+  };
+
+  const handleSaveDraft = () => {
+    if (registrationBlocker) {
+      toast.error(registrationBlocker);
+      return;
+    }
+    if (validate()) void saveRegistration('DRAFT');
   };
 
   const saveRegistration = async (state: 'DRAFT' | 'SUBMITTED') => {
@@ -155,7 +184,16 @@ export default function RegisterTeamPage() {
       if (state === 'SUBMITTED') setSubmitted(true);
     } catch (error) {
       console.error('Failed to save team registration', error);
-      toast.error('Registration could not be saved. Please try again.');
+      const message = error instanceof FirebaseError && error.code === 'functions/failed-precondition'
+        ? error.message
+        : error instanceof FirebaseError && error.code === 'functions/permission-denied'
+          ? 'Your account does not have an active school coordinator assignment for this school. Ask an administrator to check your school assignment.'
+          : error instanceof FirebaseError && error.code === 'functions/internal'
+            ? 'The registration service failed while checking or saving team data. Ask an administrator to check the latest submitRegistration function logs.'
+            : error instanceof Error
+              ? error.message
+              : 'Registration could not be saved. Please try again.';
+      toast.error(message);
     } finally {
       setSaving(false);
     }
@@ -327,13 +365,18 @@ export default function RegisterTeamPage() {
 
       {/* Submit */}
       <div className="flex gap-3 justify-end pb-4">
-        <Button variant="secondary" disabled={saving || loadingSeasons || !schoolId || schoolId === 'unassigned' || !seasonId || !category || !categoryConfiguration?.[category]} onClick={() => {
-          if (validate()) void saveRegistration('DRAFT');
-        }}>Save Draft</Button>
-        <Button icon={ChevronRight} iconPosition="right" disabled={saving || loadingSeasons || !schoolId || schoolId === 'unassigned' || !seasonId || !category || !categoryConfiguration?.[category]} onClick={handleSubmit}>
-          Review & Submit
+        <Button variant="secondary" disabled={saving} onClick={handleSaveDraft}>
+          Save Draft
+        </Button>
+        <Button icon={ChevronRight} iconPosition="right" disabled={saving} onClick={handleSubmit}>
+          {saving ? 'Saving…' : 'Review & Submit'}
         </Button>
       </div>
+      {registrationBlocker && (
+        <p role="status" className="pb-4 text-right text-sm text-amber-400">
+          {registrationBlocker}
+        </p>
+      )}
 
       {/* Confirm modal */}
       <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="Confirm Registration"

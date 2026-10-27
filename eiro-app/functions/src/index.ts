@@ -183,8 +183,9 @@ function assertOneOf(value: unknown, allowed: readonly string[], field: string):
 function makeCallable<T extends Data, R extends Data>(
   handler: (uid: string, data: T) => Promise<R>,
   operation = "callable",
+  invoker?: "public" | "private",
 ) {
-  return onCall(async (request) => {
+  return onCall({ ...(invoker ? { invoker } : {}) }, async (request) => {
     const uid = requireAuth(request);
     try {
       return await handler(uid, asData(request.data) as T);
@@ -274,7 +275,7 @@ export const submitSchoolApplication = makeCallable(async (uid, data) => {
     });
     throw error;
   }
-}, "submitSchoolApplication");
+}, "submitSchoolApplication", "public");
 
 export const reviewSchoolApplication = makeCallable(async (uid, data) => {
   const applicantUid = requiredString(data, "applicantUid", 150);
@@ -348,132 +349,149 @@ export const reviewSchoolApplication = makeCallable(async (uid, data) => {
       { status: "PENDING" }, { status: "APPROVED", schoolId: schoolRef.id, districtId });
   });
   return { applicantUid, status: decision === "APPROVE" ? "APPROVED" : "REJECTED" };
-});
+}, "reviewSchoolApplication", "public");
 
 export const submitRegistration = makeCallable(async (uid, data) => {
-  const seasonId = requiredString(data, "seasonId", 150);
-  const categoryCode = assertOneOf(
-    data.categoryCode,
-    ["SUMO", "MAZE", "WALL", "ECO_CITY", "NEXTGEN_FACTORY", "INNOVATOR_JUNIOR", "INNOVATOR_SENIOR"],
-    "categoryCode",
-  );
-  const teamName = requiredString(data, "teamName", 120);
-  const projectTitle = optionalString(data, "projectTitle", 300);
-  const state = assertOneOf(data.state, ["DRAFT", "SUBMITTED"], "state");
-  if (!Array.isArray(data.members) || data.members.length === 0 || data.members.length > 400) {
-    return fail("invalid-argument", "members must contain between 1 and 400 students.");
-  }
-  const members = data.members.map((value) => {
-    const member = asData(value);
-    return {
-      name: requiredString(member, "name", 120),
-      grade: requiredString(member, "grade", 40),
-      ...(optionalString(member, "section", 40) ? { section: optionalString(member, "section", 40) } : {}),
-    };
-  });
-
-  const assignmentRef = ref("roleAssignments", `${uid}_SCHOOL_COORDINATOR`);
-  const [assignmentSnapshot, seasonSnapshot, categoryConfigSnapshot] = await Promise.all([
-    assignmentRef.get(),
-    ref("seasons", seasonId).get(),
-    ref("config", "categories").get(),
-  ]);
-  if (!assignmentSnapshot.exists) return fail("permission-denied", "An active school coordinator assignment is required.");
-  const assignment = assignmentSnapshot.data()!;
-  if (assignment.uid !== uid || assignment.role !== "SCHOOL_COORDINATOR" || assignment.active !== true ||
-      typeof assignment.scopeId !== "string" || assignment.scopeId.trim() === "") {
-    return fail("permission-denied", "The school coordinator assignment is invalid or inactive.");
-  }
-  const schoolId = assignment.scopeId;
-  if (!seasonSnapshot.exists || seasonSnapshot.data()!.phase !== "REGISTRATION_OPEN") {
-    return fail("failed-precondition", "The selected season is not open for registration.");
-  }
-  const season = seasonSnapshot.data()!;
-  const now = Date.now();
-  for (const key of ["registrationWindowStart", "registrationWindowEnd"] as const) {
-    const date = season[key];
-    if (date == null) continue;
-    const millis = date instanceof Timestamp
-      ? date.toMillis()
-      : date instanceof Date
-        ? date.getTime()
-        : undefined;
-    if (millis === undefined) return fail("failed-precondition", `Season ${key} is not a valid Firestore timestamp.`);
-    if (key === "registrationWindowStart" && now < millis) {
-      return fail("failed-precondition", "The registration window has not started.");
+  let stage = "validating request";
+  try {
+    const seasonId = requiredString(data, "seasonId", 150);
+    const categoryCode = assertOneOf(
+      data.categoryCode,
+      ["SUMO", "MAZE", "WALL", "ECO_CITY", "NEXTGEN_FACTORY", "INNOVATOR_JUNIOR", "INNOVATOR_SENIOR"],
+      "categoryCode",
+    );
+    const teamName = requiredString(data, "teamName", 120);
+    const projectTitle = optionalString(data, "projectTitle", 300);
+    const state = assertOneOf(data.state, ["DRAFT", "SUBMITTED"], "state");
+    if (!Array.isArray(data.members) || data.members.length === 0 || data.members.length > 400) {
+      return fail("invalid-argument", "members must contain between 1 and 400 students.");
     }
-    if (key === "registrationWindowEnd" && now > millis) {
-      return fail("failed-precondition", "The registration window has closed.");
-    }
-  }
-  if (!categoryConfigSnapshot.exists) return fail("failed-precondition", "Category registration settings are not configured.");
-  const categorySettings = categoryConfigSnapshot.data()![categoryCode];
-  if (!categorySettings || typeof categorySettings !== "object" || Array.isArray(categorySettings)) {
-    return fail("failed-precondition", "This category has no saved registration configuration.");
-  }
-  const settings = categorySettings as Data;
-  if (!Number.isSafeInteger(settings.minTeam) || !Number.isSafeInteger(settings.maxTeam) ||
-      (settings.minTeam as number) < 1 || (settings.maxTeam as number) < (settings.minTeam as number) ||
-      (settings.maxTeam as number) > 400 || typeof settings.hasFee !== "boolean") {
-    return fail("failed-precondition", "The saved category team-size or fee configuration is invalid.");
-  }
-  if (members.length < (settings.minTeam as number) || members.length > (settings.maxTeam as number)) {
-    return fail("invalid-argument", `The category requires between ${settings.minTeam} and ${settings.maxTeam} students.`);
-  }
-  const schoolSnapshot = await ref("schools", schoolId).get();
-  if (!schoolSnapshot.exists) return fail("failed-precondition", "The assigned school does not exist.");
+    const members = data.members.map((value) => {
+      const member = asData(value);
+      return {
+        name: requiredString(member, "name", 120),
+        grade: requiredString(member, "grade", 40),
+        ...(optionalString(member, "section", 40) ? { section: optionalString(member, "section", 40) } : {}),
+      };
+    });
 
-  const teamRef = db.collection("teams").doc();
-  const registrationRef = db.collection("registrations").doc();
-  const studentRefs = members.map(() => db.collection("students").doc());
-  const batch = db.batch();
-  batch.create(teamRef, {
-    id: teamRef.id,
-    seasonId,
-    schoolId,
-    categoryCode,
-    teamName,
-    ...(projectTitle ? { projectTitle } : {}),
-    createdBy: uid,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-  studentRefs.forEach((studentRef, index) => {
-    batch.create(studentRef, {
-      id: studentRef.id,
+    stage = "reading coordinator, season, and category records";
+    const assignmentRef = ref("roleAssignments", `${uid}_SCHOOL_COORDINATOR`);
+    const [assignmentSnapshot, seasonSnapshot, categoryConfigSnapshot] = await Promise.all([
+      assignmentRef.get(),
+      ref("seasons", seasonId).get(),
+      ref("config", "categories").get(),
+    ]);
+    if (!assignmentSnapshot.exists) return fail("permission-denied", "An active school coordinator assignment is required.");
+    const assignment = assignmentSnapshot.data()!;
+    if (assignment.uid !== uid || assignment.role !== "SCHOOL_COORDINATOR" || assignment.active !== true ||
+        typeof assignment.scopeId !== "string" || assignment.scopeId.trim() === "") {
+      return fail("permission-denied", "The school coordinator assignment is invalid or inactive.");
+    }
+    const schoolId = assignment.scopeId;
+    if (!seasonSnapshot.exists || seasonSnapshot.data()!.phase !== "REGISTRATION_OPEN") {
+      return fail("failed-precondition", "The selected season is not open for registration.");
+    }
+    const season = seasonSnapshot.data()!;
+    const now = Date.now();
+    for (const key of ["registrationWindowStart", "registrationWindowEnd"] as const) {
+      const date = season[key];
+      if (date == null) continue;
+      const millis = date instanceof Timestamp
+        ? date.toMillis()
+        : date instanceof Date
+          ? date.getTime()
+          : undefined;
+      if (millis === undefined) return fail("failed-precondition", `Season ${key} is not a valid Firestore timestamp.`);
+      if (key === "registrationWindowStart" && now < millis) {
+        return fail("failed-precondition", "The registration window has not started.");
+      }
+      if (key === "registrationWindowEnd" && now > millis) {
+        return fail("failed-precondition", "The registration window has closed.");
+      }
+    }
+    if (!categoryConfigSnapshot.exists) return fail("failed-precondition", "Category registration settings are not configured.");
+    const categorySettings = categoryConfigSnapshot.data()![categoryCode];
+    if (!categorySettings || typeof categorySettings !== "object" || Array.isArray(categorySettings)) {
+      return fail("failed-precondition", "This category has no saved registration configuration.");
+    }
+    const settings = categorySettings as Data;
+    if (!Number.isSafeInteger(settings.minTeam) || !Number.isSafeInteger(settings.maxTeam) ||
+        (settings.minTeam as number) < 1 || (settings.maxTeam as number) < (settings.minTeam as number) ||
+        (settings.maxTeam as number) > 400 || typeof settings.hasFee !== "boolean") {
+      return fail("failed-precondition", "The saved category team-size or fee configuration is invalid.");
+    }
+    if (members.length < (settings.minTeam as number) || members.length > (settings.maxTeam as number)) {
+      return fail("invalid-argument", `The category requires between ${settings.minTeam} and ${settings.maxTeam} students.`);
+    }
+
+    stage = "checking assigned school";
+    const schoolSnapshot = await ref("schools", schoolId).get();
+    if (!schoolSnapshot.exists) return fail("failed-precondition", "The assigned school does not exist.");
+
+    stage = "saving team, students, registration, and audit record";
+    const teamRef = db.collection("teams").doc();
+    const registrationRef = db.collection("registrations").doc();
+    const studentRefs = members.map(() => db.collection("students").doc());
+    const batch = db.batch();
+    batch.create(teamRef, {
+      id: teamRef.id,
+      seasonId,
       schoolId,
-      teamId: teamRef.id,
-      ...members[index],
+      categoryCode,
+      teamName,
+      ...(projectTitle ? { projectTitle } : {}),
+      createdBy: uid,
       createdAt: FieldValue.serverTimestamp(),
     });
-  });
-  batch.create(registrationRef, {
-    id: registrationRef.id,
-    teamId: teamRef.id,
-    schoolId,
-    seasonId,
-    categoryCode,
-    state,
-    eligibilitySnapshot: {
-      memberCount: members.length,
-      minTeam: settings.minTeam,
-      maxTeam: settings.maxTeam,
-    },
-    feeStatus: settings.hasFee ? "PENDING" : "NOT_REQUIRED",
-    ...(state === "SUBMITTED" ? { submittedAt: FieldValue.serverTimestamp() } : {}),
-    updatedAt: FieldValue.serverTimestamp(),
-    createdAt: FieldValue.serverTimestamp(),
-  });
-  batch.create(db.collection("auditLogs").doc(), {
-    actorUid: uid,
-    action: state === "SUBMITTED" ? "REGISTRATION_SUBMITTED" : "REGISTRATION_DRAFT_CREATED",
-    entityType: "registration",
-    entityId: registrationRef.id,
-    timestamp: FieldValue.serverTimestamp(),
-    after: { teamId: teamRef.id, schoolId, seasonId, categoryCode, state },
-  });
-  await batch.commit();
-  return { teamId: teamRef.id, registrationId: registrationRef.id };
-});
+    studentRefs.forEach((studentRef, index) => {
+      batch.create(studentRef, {
+        id: studentRef.id,
+        schoolId,
+        teamId: teamRef.id,
+        ...members[index],
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+    batch.create(registrationRef, {
+      id: registrationRef.id,
+      teamId: teamRef.id,
+      schoolId,
+      seasonId,
+      categoryCode,
+      state,
+      eligibilitySnapshot: {
+        memberCount: members.length,
+        minTeam: settings.minTeam,
+        maxTeam: settings.maxTeam,
+      },
+      feeStatus: settings.hasFee ? "PENDING" : "NOT_REQUIRED",
+      ...(state === "SUBMITTED" ? { submittedAt: FieldValue.serverTimestamp() } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.create(db.collection("auditLogs").doc(), {
+      actorUid: uid,
+      action: state === "SUBMITTED" ? "REGISTRATION_SUBMITTED" : "REGISTRATION_DRAFT_CREATED",
+      entityType: "registration",
+      entityId: registrationRef.id,
+      timestamp: FieldValue.serverTimestamp(),
+      after: { teamId: teamRef.id, schoolId, seasonId, categoryCode, state },
+    });
+    await batch.commit();
+    return { teamId: teamRef.id, registrationId: registrationRef.id };
+  } catch (error) {
+    logger.error("Team registration submission failed", {
+      operation: "submitRegistration",
+      stage,
+      uid,
+      error: error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : String(error),
+    });
+    throw error;
+  }
+}, "submitRegistration");
 
 export const recordManualPayment = makeCallable(async (uid, data) => {
   const invoiceId = requiredString(data, "invoiceId", 150);

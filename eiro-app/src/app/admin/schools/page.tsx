@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { PageHeader, Card, Button, StatusBadge, CategoryBadge, Modal, Textarea } from '@/components/ui';
 import { Search, CheckCircle2, XCircle, AlertCircle, Eye, Loader2, RefreshCw, School } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
@@ -146,7 +147,16 @@ export default function SchoolApprovalsPage() {
         title="School & Team Approvals"
         subtitle={error ? 'Registration data unavailable' : `${pendingCount} teams pending review`}
         actions={
-          <Button variant="secondary" icon={RefreshCw} onClick={load} disabled={loading}>Refresh</Button>
+          <div className="flex gap-2">
+            <Link
+              href="/admin/school-applications"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-gray-300 transition-all duration-200 hover:border-white/20 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            >
+              <School className="h-4 w-4 flex-shrink-0" />
+              School Applications
+            </Link>
+            <Button variant="secondary" icon={RefreshCw} onClick={load} disabled={loading}>Refresh</Button>
+          </div>
         }
       />
 
