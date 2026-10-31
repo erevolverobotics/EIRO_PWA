@@ -314,7 +314,7 @@ export default function SeasonsPage() {
                     </div>
                     <div className="flex flex-wrap gap-3 text-xs text-gray-500">
                       <span className="text-indigo-400 font-medium">{s.year ?? '—'}</span>
-                      {(s.registrationWindowStart || s.registrationWindowEnd) && (
+                      {Boolean(s.registrationWindowStart || s.registrationWindowEnd) && (
                         <span className="flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
                           Reg: {formatDate(s.registrationWindowStart) || '—'} → {formatDate(s.registrationWindowEnd) || '—'}
