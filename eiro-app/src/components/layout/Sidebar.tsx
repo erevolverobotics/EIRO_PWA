@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { X, Bot, ChevronRight } from 'lucide-react';
+import { X, Bot, ChevronRight, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
+import { useAuth } from '@/lib/firebase/auth-context';
 
 export interface NavItem {
   label: string;
@@ -60,7 +61,36 @@ function NavLink({ item, depth = 0, onClose }: { item: NavItem; depth?: number; 
   );
 }
 
+const ROLE_DISPLAY: Record<string, string> = {
+  SUPER_ADMIN:       'Super Admin',
+  DISTRICT_ADMIN:    'District Admin',
+  HEAD_JUDGE:        'Head Judge',
+  JUDGE:             'Judge / Referee',
+  VENUE_COORDINATOR: 'Venue Coordinator',
+  CHECKIN_VOLUNTEER: 'Check-in Volunteer',
+  SCHOOL_COORDINATOR:'School Coordinator',
+  PUBLIC_VIEWER:     'Viewer',
+};
+
+const ROLE_COLOR: Record<string, string> = {
+  SUPER_ADMIN:       'text-red-400',
+  DISTRICT_ADMIN:    'text-orange-400',
+  HEAD_JUDGE:        'text-purple-400',
+  JUDGE:             'text-purple-400',
+  VENUE_COORDINATOR: 'text-green-400',
+  CHECKIN_VOLUNTEER: 'text-green-400',
+  SCHOOL_COORDINATOR:'text-blue-400',
+  PUBLIC_VIEWER:     'text-gray-400',
+};
+
 export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarProps) {
+  const { primaryRole, profile, signOut } = useAuth();
+
+  // Use live role from auth if available, fall back to prop
+  const liveRole   = primaryRole ? (ROLE_DISPLAY[primaryRole] ?? roleLabel) : roleLabel;
+  const liveColor  = primaryRole ? (ROLE_COLOR[primaryRole]   ?? roleColor) : roleColor;
+  const displayName = profile?.displayName ?? profile?.email ?? '';
+
   return (
     <>
       {/* Overlay for mobile */}
@@ -76,15 +106,17 @@ export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarP
           open ? 'translate-x-0' : '-translate-x-full'
         )}
       >
-        {/* Header */}
+        {/* Header — Brand + live role */}
         <div className="flex items-center justify-between p-4 border-b border-white/5">
-          <Link href="/" className="flex items-center gap-2.5">
+          <Link href="/" className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0">
               <Bot className="w-4 h-4 text-white" />
             </div>
-            <div>
+            <div className="min-w-0">
               <span className="text-sm font-bold text-white leading-none">EIRO</span>
-              <p className={cn('text-[10px] leading-none mt-0.5', roleColor)}>{roleLabel}</p>
+              <p className={cn('text-[10px] leading-none mt-0.5 font-semibold', liveColor)}>
+                {liveRole}
+              </p>
             </div>
           </Link>
           <button
@@ -105,9 +137,22 @@ export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarP
           </ul>
         </nav>
 
-        {/* Footer */}
-        <div className="p-3 border-t border-white/5">
-          <p className="text-[10px] text-gray-600 text-center">EIRO Platform v1.0 · Evolve Robotics</p>
+        {/* User identity + sign-out footer */}
+        <div className="p-3 border-t border-white/5 space-y-2">
+          {displayName && (
+            <div className="px-2 py-1.5 rounded-lg bg-white/[0.03] border border-white/5">
+              <p className="text-[11px] font-medium text-white truncate">{displayName}</p>
+              <p className={cn('text-[10px] truncate', liveColor)}>{liveRole}</p>
+            </div>
+          )}
+          <button
+            onClick={() => signOut()}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors text-xs"
+          >
+            <LogOut className="w-3 h-3" />
+            Sign out
+          </button>
+          <p className="text-[10px] text-gray-700 text-center">EIRO Platform v1.0</p>
         </div>
       </aside>
     </>

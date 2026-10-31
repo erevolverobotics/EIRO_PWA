@@ -114,7 +114,7 @@ export default function RegisterTeamPage() {
     if (categorySettings && members.length > categorySettings.maxTeam) {
       e.members = `No more than ${categorySettings.maxTeam} students are allowed`;
     }
-    if (!teamName.trim()) e.teamName = 'Team name is required';
+    // teamName is optional — team code will be used as fallback if blank
     if (needsProject && !projectTitle.trim()) e.projectTitle = 'Project title is required for this category';
     members.forEach((m, i) => {
       if (!m.name.trim()) e[`name_${i}`] = 'Student name required';
@@ -164,10 +164,12 @@ export default function RegisterTeamPage() {
     }
     setSaving(true);
     try {
+      // If team name is blank, Cloud Function will use the auto-generated team code (e.g. SU00001)
+      // We signal this by sending an empty string — the function handles the fallback
       const request: SubmitRegistrationRequest = {
         seasonId,
         categoryCode: category,
-        teamName: teamName.trim(),
+        teamName: teamName.trim() || '',   // blank → Cloud Function uses teamCode as name
         ...(projectTitle.trim() ? { projectTitle: projectTitle.trim() } : {}),
         members: members.map(member => ({
           name: member.name.trim(),
@@ -282,10 +284,14 @@ export default function RegisterTeamPage() {
         </h3>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1.5">Team Name *</label>
-            <input type="text" className={`eiro-input ${errors.teamName ? 'border-red-500/60' : ''}`}
-              placeholder="Enter team name" value={teamName} onChange={e => { setTeamName(e.target.value); setErrors(ex => ({ ...ex, teamName: '' })); }} />
-            {errors.teamName && <p className="text-xs text-red-400 mt-1">{errors.teamName}</p>}
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">
+              Team Name
+              <span className="ml-2 text-xs text-gray-500 font-normal">(optional — team ID used if blank)</span>
+            </label>
+            <input type="text" className="eiro-input"
+              placeholder="e.g. Robo Warriors (leave blank to use auto ID)"
+              value={teamName}
+              onChange={e => setTeamName(e.target.value)} />
           </div>
 
           {needsProject && (

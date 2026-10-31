@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
@@ -16,7 +16,7 @@ const ADMIN_NAV: NavItem[] = [
   { label: 'Seasons', href: '/admin/seasons', icon: Trophy },
   { label: 'Categories & Rules', href: '/admin/categories', icon: Settings },
   { label: 'Districts & Venues', href: '/admin/districts', icon: MapPin },
-  { label: 'Schools & Approvals', href: '/admin/schools', icon: School, badge: 3 },
+  { label: 'Team Approvals', href: '/admin/schools', icon: School, badge: 3 },
   { label: 'School Applications', href: '/admin/school-applications', icon: ClipboardList },
   { label: 'Staff & Judges', href: '/admin/staff', icon: Users },
   { label: 'Schedule Builder', href: '/admin/schedule', icon: Calendar },

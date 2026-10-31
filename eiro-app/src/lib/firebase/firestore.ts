@@ -128,3 +128,49 @@ export async function revokeRole(uid: string, role: string): Promise<void> {
     updatedAt: serverTimestamp(),
   });
 }
+
+// ─── Team Code Generation ─────────────────────────────────────────────────
+
+/**
+ * Category prefix map — first 2 uppercase letters of the display code.
+ * Format: XX00001 (2-letter prefix + 5-digit zero-padded sequence).
+ * Example: SU00001, MA00003, EC00002
+ */
+const CATEGORY_PREFIX: Record<string, string> = {
+  SUMO:             'SU',
+  MAZE:             'MA',
+  WALL:             'WA',
+  ECO_CITY:         'EC',
+  NEXTGEN_FACTORY:  'NF',
+  INNOVATOR_JUNIOR: 'IJ',
+  INNOVATOR_SENIOR: 'IS',
+};
+
+/**
+ * Generate the next sequential team code for a given category.
+ * Queries the `teams` collection for existing codes with the same prefix,
+ * finds the highest number, and returns prefix + (max + 1) zero-padded to 5 digits.
+ *
+ * Example: if SU00003 exists already → returns "SU00004"
+ */
+export async function generateTeamCode(categoryCode: string): Promise<string> {
+  assertFirebaseConfigured();
+  const prefix = CATEGORY_PREFIX[categoryCode] ?? categoryCode.slice(0, 2).toUpperCase();
+
+  // Query all teams with this category
+  const snap = await getDocs(
+    query(collection(db, 'teams'), where('category', '==', categoryCode))
+  );
+
+  let maxNum = 0;
+  snap.docs.forEach(d => {
+    const code: string = d.data().teamCode ?? d.data().displayTeamCode ?? '';
+    if (code.startsWith(prefix)) {
+      const num = parseInt(code.slice(prefix.length), 10);
+      if (!isNaN(num) && num > maxNum) maxNum = num;
+    }
+  });
+
+  const nextNum = maxNum + 1;
+  return `${prefix}${String(nextNum).padStart(5, '0')}`;
+}

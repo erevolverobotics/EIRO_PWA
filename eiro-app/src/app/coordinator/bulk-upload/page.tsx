@@ -37,10 +37,13 @@ const CATEGORIES = Object.keys(CATEGORY_LABELS) as CategoryCode[];
 const MAX_IMPORT_ROWS = 99;
 const TEMPLATE = [
   'team_reference,team_name,category_code,student_name,grade,section,project_title,coordinator_name,coordinator_phone',
-  'T001,Example Team,SUMO,Student One,7,A,,,',
-  'T001,Example Team,SUMO,Student Two,7,B,,,',
+  '# team_name is optional — if blank, team_reference is used as the team name',
+  'T001,Robo Warriors,SUMO,Student One,7,A,,,',
+  'T001,Robo Warriors,SUMO,Student Two,7,B,,,',
+  'T002,,MAZE,Student Three,8,A,,,',
 ].join('\n');
-const REQUIRED_HEADERS = ['team_reference', 'team_name', 'category_code', 'student_name', 'grade'];
+// team_name intentionally NOT required — blank falls back to team_reference
+const REQUIRED_HEADERS = ['team_reference', 'category_code', 'student_name', 'grade'];
 
 function groupRows(rows: ParsedRow[]) {
   const groups = new Map<string, ParsedRow[]>();
@@ -51,7 +54,8 @@ function groupRows(rows: ParsedRow[]) {
   });
   return [...groups.entries()].map(([reference, members]) => ({
     reference,
-    name: members[0]?.teamName || 'Unnamed team',
+    // If teamName is blank, fall back to the team_reference (e.g. "T001")
+    name: members[0]?.teamName || reference || 'Unnamed',
     category: members[0]?.categoryCode || '',
     members,
     valid: members.every(member => member.valid),
@@ -148,10 +152,13 @@ export default function BulkUploadPage() {
       const parsedRows: ParsedRow[] = parsed.data.map((data, index) => {
         const categoryValue = data.category_code?.toUpperCase() || '';
         const categoryCode = CATEGORIES.includes(categoryValue as CategoryCode) ? categoryValue as CategoryCode : '';
+        const teamRef = data.team_reference?.trim() || '';
+        // team_name is optional — falls back to team_reference if blank
+        const teamName = data.team_name?.trim() || teamRef;
         const row: ParsedRow = {
           rowNum: index + 2,
-          teamReference: data.team_reference || '',
-          teamName: data.team_name || '',
+          teamReference: teamRef,
+          teamName,
           categoryCode,
           studentName: data.student_name || '',
           grade: data.grade || '',
@@ -161,7 +168,7 @@ export default function BulkUploadPage() {
           errors: [],
         };
         if (!row.teamReference) row.errors.push('team_reference is required');
-        if (!row.teamName) row.errors.push('team_name is required');
+        // team_name is NOT required — blank is allowed (uses team_reference as fallback)
         if (!row.categoryCode) row.errors.push(`Unknown category code "${categoryValue}"`);
         if (!row.studentName) row.errors.push('student_name is required');
         if (!row.grade) row.errors.push('grade is required');
