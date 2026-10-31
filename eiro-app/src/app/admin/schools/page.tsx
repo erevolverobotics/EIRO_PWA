@@ -8,6 +8,7 @@ import { db } from '@/lib/firebase/config';
 import {
   collection, getDocs,
 } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import type { CategoryCode, RegistrationState } from '@/lib/types';
 import { callEiroFunction } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
@@ -102,6 +103,10 @@ export default function SchoolApprovalsPage() {
 
   const applyAction = async () => {
     if (!selectedTeam || !actionType) return;
+    if (actionType === 'approve' && !['NOT_REQUIRED', 'VERIFIED', 'WAIVED'].includes(selectedTeam.feeStatus)) {
+      toast.error('This team cannot be approved until its fee is verified, waived, or marked not required.');
+      return;
+    }
     setSaving(true);
 
     const decisionMap = {
@@ -124,7 +129,12 @@ export default function SchoolApprovalsPage() {
       await load();
     } catch (e) {
       console.error(e);
-      toast.error('Failed to update team status.');
+      const message = e instanceof FirebaseError
+        ? `${e.message}${e.code === 'functions/internal' ? ' Check the reviewRegistration Cloud Function logs for the underlying error.' : ''}`
+        : e instanceof Error
+          ? e.message
+          : 'Failed to update team status.';
+      toast.error(message);
     } finally {
       setSaving(false);
     }

@@ -174,6 +174,8 @@ const STATUS_MAP: Record<string, { label: string; variant: BadgeProps['variant']
   NOT_REQUIRED: { label: 'Not Required', variant: 'default' },
   PARTIAL: { label: 'Partial', variant: 'warning' },
   VERIFIED: { label: 'Verified', variant: 'success' },
+  PAID: { label: 'Paid', variant: 'success' },
+  UNPAID: { label: 'Unpaid', variant: 'warning' },
   WAIVED: { label: 'Waived', variant: 'purple' },
   NOT_MARKED: { label: 'Not Marked', variant: 'default' },
   PRESENT: { label: 'Present', variant: 'success' },

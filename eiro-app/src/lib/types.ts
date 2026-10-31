@@ -152,6 +152,10 @@ export interface Registration {
   state: RegistrationState;
   eligibilitySnapshot: Record<string, unknown>;
   feeStatus: FeeStatus;
+  feeAmountPerHeadMinorUnits?: number;
+  feeTotalMinorUnits?: number;
+  feePaidAt?: unknown;
+  feePaidByUid?: string;
   approvalActor?: string;
   submittedAt?: unknown;
   approvedAt?: unknown;

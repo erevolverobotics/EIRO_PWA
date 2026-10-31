@@ -5,7 +5,7 @@ import { PageHeader, Card, Button, Modal, Input } from '@/components/ui';
 import { Plus, Trophy, Calendar, Archive, ChevronRight, Settings, CheckCircle2, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import {
-  collection, getDocs, addDoc, doc, updateDoc, deleteDoc, serverTimestamp,
+  collection, getDocs, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
 } from 'firebase/firestore';
 import toast from 'react-hot-toast';
 
@@ -93,14 +93,21 @@ export default function SeasonsPage() {
     if (!form.name.trim()) return toast.error('Season name is required');
     const year = Number(form.year);
     if (!Number.isInteger(year) || year < 1) return toast.error('Enter a valid season year.');
+    if (form.regOpen && form.regClose && form.regClose < form.regOpen) {
+      return toast.error('Registration close date must be on or after the open date.');
+    }
     setSaving(true);
     try {
       await addDoc(collection(db, 'seasons'), {
         name: form.name.trim(),
         year,
         phase: 'SETUP',
-        registrationWindowStart: form.regOpen || null,
-        registrationWindowEnd: form.regClose || null,
+        registrationWindowStart: form.regOpen
+          ? Timestamp.fromDate(new Date(`${form.regOpen}T00:00:00.000Z`))
+          : null,
+        registrationWindowEnd: form.regClose
+          ? Timestamp.fromDate(new Date(`${form.regClose}T23:59:59.999Z`))
+          : null,
         publishedSettings: {},
         createdAt: serverTimestamp(),
       });

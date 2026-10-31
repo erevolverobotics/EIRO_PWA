@@ -61,7 +61,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // doesn't kill the entire Promise — only fulfilled docs are used.
           const ALL_ROLE_KEYS = [
             'SUPER_ADMIN', 'DISTRICT_ADMIN', 'HEAD_JUDGE',
-            'VENUE_COORDINATOR', 'SCHOOL_COORDINATOR', 'JUDGE', 'CHECKIN_VOLUNTEER',
+            'VENUE_COORDINATOR', 'SCHOOL_COORDINATOR', 'JUDGE',
+            'CHECKIN_VOLUNTEER', 'PUBLIC_VIEWER',
           ];
           const roleResults = await Promise.allSettled(
             ALL_ROLE_KEYS.map(role =>
@@ -176,8 +177,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     'CHECKIN_VOLUNTEER', 'PUBLIC_VIEWER',
   ];
 
-  const primaryRole: UserRole | null = roles.length > 0
-    ? ROLE_PRIORITY.find((r) => roles.some((ra) => ra.role === r && ra.active)) ?? null
+  const activeRoles = roles.filter(role => role.active);
+  const assignedRoles = activeRoles.filter(role =>
+    !(role.role === 'SCHOOL_COORDINATOR' && role.scopeId === 'unassigned')
+  );
+  const rolesForRouting = assignedRoles.length > 0 ? assignedRoles : activeRoles;
+
+  const primaryRole: UserRole | null = rolesForRouting.length > 0
+    ? ROLE_PRIORITY.find(role => rolesForRouting.some(assignment => assignment.role === role)) ?? null
     : null;
 
   return (

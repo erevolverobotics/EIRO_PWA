@@ -184,9 +184,9 @@ export default function CategoriesPage() {
                         <p className="text-sm font-medium text-white">{cfg.minTeam}–{cfg.maxTeam} members</p>
                       </div>
                       <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                        <p className="text-xs text-gray-500 mb-1">Participation Fee</p>
+                        <p className="text-xs text-gray-500 mb-1">Fee per student</p>
                         {cfg.hasFee
-                          ? <p className="text-sm font-bold text-yellow-400">₹{cfg.feeAmount}</p>
+                          ? <p className="text-sm font-bold text-yellow-400">₹{cfg.feeAmount} / student</p>
                           : <p className="text-sm text-green-400">Free</p>
                         }
                       </div>
@@ -240,7 +240,7 @@ export default function CategoriesPage() {
                 onChange={e => setEditForm(f => ({ ...f, maxTeam: e.target.value }))} />
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Fee (₹, 0 = free)" id="fee-amount" type="number" placeholder="Required"
+              <Input label="Fee per student (₹, 0 = free)" id="fee-amount" type="number" placeholder="Required"
                 value={editForm.feeAmount}
                 onChange={e => setEditForm(f => ({ ...f, feeAmount: e.target.value }))} />
               <Input label="Rounds / Attempts" id="rounds" type="number" placeholder="Required"

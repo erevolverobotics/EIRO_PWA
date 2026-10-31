@@ -5,6 +5,7 @@ import {
   getFirestore,
   type DocumentData,
   type DocumentReference,
+  type QuerySnapshot,
   Timestamp,
   type Transaction,
 } from "firebase-admin/firestore";
@@ -17,6 +18,16 @@ initializeApp();
 const db = getFirestore();
 const REGION = "us-central1";
 const MAX_BATCH_SIZE = 200;
+const MAX_TEAM_IMPORT_ROWS = 120;
+const REGISTRATION_CATEGORIES = [
+  "SUMO",
+  "MAZE",
+  "WALL",
+  "ECO_CITY",
+  "NEXTGEN_FACTORY",
+  "INNOVATOR_JUNIOR",
+  "INNOVATOR_SENIOR",
+] as const;
 setGlobalOptions({ region: REGION });
 
 type Data = Record<string, unknown>;
@@ -101,6 +112,54 @@ function hashId(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function categoryTeamPrefix(categoryCode: string): string {
+  const prefixes: Record<(typeof REGISTRATION_CATEGORIES)[number], string> = {
+    SUMO: "SU",
+    MAZE: "MA",
+    WALL: "WA",
+    ECO_CITY: "EC",
+    NEXTGEN_FACTORY: "NF",
+    INNOVATOR_JUNIOR: "IJ",
+    INNOVATOR_SENIOR: "IS",
+  };
+  const prefix = prefixes[categoryCode as (typeof REGISTRATION_CATEGORIES)[number]];
+  if (!prefix) return fail("invalid-argument", "categoryCode has no team ID prefix.");
+  return prefix;
+}
+
+function highestExistingTeamNumber(
+  snapshots: QuerySnapshot<DocumentData>,
+  prefix: string,
+): number {
+  const pattern = new RegExp(`^${prefix}(\\d{4})$`);
+  return snapshots.docs.reduce((highest, snapshot) => {
+    const data = snapshot.data();
+    const candidate = typeof data.displayTeamCode === "string"
+      ? data.displayTeamCode
+      : snapshot.id;
+    const match = pattern.exec(candidate);
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0);
+}
+
+async function allocateTeamCode(categoryCode: string): Promise<string> {
+  const prefix = categoryTeamPrefix(categoryCode);
+  const counterRef = ref("teamCodeCounters", categoryCode);
+  const teamQuery = db.collection("teams").where("categoryCode", "==", categoryCode);
+  const nextNumber = await db.runTransaction(async (transaction) => {
+    const counterSnapshot = await transaction.get(counterRef);
+    const existingTeams = counterSnapshot.exists ? undefined : await transaction.get(teamQuery);
+    const storedNext = counterSnapshot.data()?.nextNumber;
+    const next = Number.isSafeInteger(storedNext) && (storedNext as number) > 0
+      ? storedNext as number
+      : highestExistingTeamNumber(existingTeams!, prefix) + 1;
+    if (next > 9999) return fail("failed-precondition", `The ${categoryCode} team ID sequence is full (maximum ${prefix}9999).`);
+    transaction.set(counterRef, { nextNumber: next + 1, updatedAt: FieldValue.serverTimestamp() });
+    return next;
+  });
+  return `${prefix}${String(nextNumber).padStart(4, "0")}`;
+}
+
 function ref(collection: string, id: string): DocumentReference<DocumentData> {
   return db.collection(collection).doc(id);
 }
@@ -178,6 +237,115 @@ function assertOneOf(value: unknown, allowed: readonly string[], field: string):
     return fail("invalid-argument", `${field} has an unsupported value.`);
   }
   return value;
+}
+
+function parseTimestampMillis(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (value instanceof Timestamp) return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+      if (Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === trimmed) {
+        return parsed.getTime();
+      }
+      return undefined;
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)) {
+      const parsed = Date.parse(trimmed);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.toDate === "function" && candidate.toDate instanceof Function) {
+      const date = candidate.toDate();
+      if (date instanceof Date && Number.isFinite(date.getTime())) {
+        return date.getTime();
+      }
+    }
+    if (typeof candidate.seconds === "number" || typeof candidate._seconds === "number") {
+      const seconds = Number(candidate.seconds ?? candidate._seconds);
+      const nanoseconds = Number(candidate.nanoseconds ?? candidate._nanoseconds ?? 0);
+      if (Number.isFinite(seconds) && Number.isFinite(nanoseconds)) {
+        return seconds * 1000 + nanoseconds / 1_000_000;
+      }
+    }
+  }
+  return undefined;
+}
+
+function assertRegistrationOpen(season: Data): void {
+  if (season.phase !== "REGISTRATION_OPEN") {
+    return fail("failed-precondition", "The selected season is not open for registration.");
+  }
+  const now = Date.now();
+  for (const key of ["registrationWindowStart", "registrationWindowEnd"] as const) {
+    const date = season[key];
+    if (date == null) continue;
+    const millis = parseTimestampMillis(date);
+    if (millis === undefined) {
+      return fail("failed-precondition", `Season ${key} is not a valid Firestore timestamp.`);
+    }
+    if (key === "registrationWindowEnd") {
+      const endValue = season.registrationWindowEnd;
+      const parsedEnd = parseTimestampMillis(endValue);
+      if (parsedEnd === undefined) {
+        return fail("failed-precondition", `Season ${key} is not a valid Firestore timestamp.`);
+      }
+      if (typeof endValue === "string" && /^\d{4}-\d{2}-\d{2}$/.test(endValue.trim())) {
+        const adjusted = parsedEnd + 24 * 60 * 60 * 1000 - 1;
+        if (now > adjusted) return fail("failed-precondition", "The registration window has closed.");
+        continue;
+      }
+      if (now > parsedEnd) {
+        return fail("failed-precondition", "The registration window has closed.");
+      }
+      continue;
+    }
+    if (key === "registrationWindowStart" && now < millis) {
+      return fail("failed-precondition", "The registration window has not started.");
+    }
+  }
+}
+
+function getCategoryRegistrationSettings(
+  categoryConfig: Data | undefined,
+  categoryCode: string,
+): { minTeam: number; maxTeam: number; hasFee: boolean; feeAmountMinorUnits: number } {
+  if (!categoryConfig) return fail("failed-precondition", "Category registration settings are not configured.");
+  const categorySettings = categoryConfig[categoryCode];
+  if (!categorySettings || typeof categorySettings !== "object" || Array.isArray(categorySettings)) {
+    return fail("failed-precondition", "This category has no saved registration configuration.");
+  }
+  const settings = categorySettings as Data;
+  if (!Number.isSafeInteger(settings.minTeam) || !Number.isSafeInteger(settings.maxTeam) ||
+      (settings.minTeam as number) < 1 || (settings.maxTeam as number) < (settings.minTeam as number) ||
+      (settings.maxTeam as number) > 400 || typeof settings.hasFee !== "boolean" ||
+      typeof settings.feeAmount !== "number" || !Number.isFinite(settings.feeAmount) ||
+      settings.feeAmount < 0 || settings.hasFee !== (settings.feeAmount > 0)) {
+    return fail("failed-precondition", "The saved category team-size or fee configuration is invalid.");
+  }
+  const feeAmountMinorUnits = Math.round(settings.feeAmount * 100);
+  if ((settings.hasFee && (feeAmountMinorUnits < 1 || feeAmountMinorUnits > 1_000_000_000)) ||
+      (!settings.hasFee && feeAmountMinorUnits !== 0) ||
+      feeAmountMinorUnits * (settings.maxTeam as number) > 1_000_000_000) {
+    return fail("failed-precondition", "The saved per-student category fee or maximum team fee exceeds the supported limit.");
+  }
+  return {
+    minTeam: settings.minTeam as number,
+    maxTeam: settings.maxTeam as number,
+    hasFee: settings.hasFee,
+    feeAmountMinorUnits,
+  };
 }
 
 function makeCallable<T extends Data, R extends Data>(
@@ -357,7 +525,7 @@ export const submitRegistration = makeCallable(async (uid, data) => {
     const seasonId = requiredString(data, "seasonId", 150);
     const categoryCode = assertOneOf(
       data.categoryCode,
-      ["SUMO", "MAZE", "WALL", "ECO_CITY", "NEXTGEN_FACTORY", "INNOVATOR_JUNIOR", "INNOVATOR_SENIOR"],
+      REGISTRATION_CATEGORIES,
       "categoryCode",
     );
     const teamName = requiredString(data, "teamName", 120);
@@ -392,36 +560,9 @@ export const submitRegistration = makeCallable(async (uid, data) => {
     if (!seasonSnapshot.exists || seasonSnapshot.data()!.phase !== "REGISTRATION_OPEN") {
       return fail("failed-precondition", "The selected season is not open for registration.");
     }
-    const season = seasonSnapshot.data()!;
-    const now = Date.now();
-    for (const key of ["registrationWindowStart", "registrationWindowEnd"] as const) {
-      const date = season[key];
-      if (date == null) continue;
-      const millis = date instanceof Timestamp
-        ? date.toMillis()
-        : date instanceof Date
-          ? date.getTime()
-          : undefined;
-      if (millis === undefined) return fail("failed-precondition", `Season ${key} is not a valid Firestore timestamp.`);
-      if (key === "registrationWindowStart" && now < millis) {
-        return fail("failed-precondition", "The registration window has not started.");
-      }
-      if (key === "registrationWindowEnd" && now > millis) {
-        return fail("failed-precondition", "The registration window has closed.");
-      }
-    }
-    if (!categoryConfigSnapshot.exists) return fail("failed-precondition", "Category registration settings are not configured.");
-    const categorySettings = categoryConfigSnapshot.data()![categoryCode];
-    if (!categorySettings || typeof categorySettings !== "object" || Array.isArray(categorySettings)) {
-      return fail("failed-precondition", "This category has no saved registration configuration.");
-    }
-    const settings = categorySettings as Data;
-    if (!Number.isSafeInteger(settings.minTeam) || !Number.isSafeInteger(settings.maxTeam) ||
-        (settings.minTeam as number) < 1 || (settings.maxTeam as number) < (settings.minTeam as number) ||
-        (settings.maxTeam as number) > 400 || typeof settings.hasFee !== "boolean") {
-      return fail("failed-precondition", "The saved category team-size or fee configuration is invalid.");
-    }
-    if (members.length < (settings.minTeam as number) || members.length > (settings.maxTeam as number)) {
+    assertRegistrationOpen(seasonSnapshot.data()!);
+    const settings = getCategoryRegistrationSettings(categoryConfigSnapshot.data(), categoryCode);
+    if (members.length < settings.minTeam || members.length > settings.maxTeam) {
       return fail("invalid-argument", `The category requires between ${settings.minTeam} and ${settings.maxTeam} students.`);
     }
 
@@ -430,12 +571,14 @@ export const submitRegistration = makeCallable(async (uid, data) => {
     if (!schoolSnapshot.exists) return fail("failed-precondition", "The assigned school does not exist.");
 
     stage = "saving team, students, registration, and audit record";
-    const teamRef = db.collection("teams").doc();
+    const teamCode = await allocateTeamCode(categoryCode);
+    const teamRef = ref("teams", teamCode);
     const registrationRef = db.collection("registrations").doc();
     const studentRefs = members.map(() => db.collection("students").doc());
     const batch = db.batch();
     batch.create(teamRef, {
       id: teamRef.id,
+      displayTeamCode: teamCode,
       seasonId,
       schoolId,
       categoryCode,
@@ -465,6 +608,8 @@ export const submitRegistration = makeCallable(async (uid, data) => {
         minTeam: settings.minTeam,
         maxTeam: settings.maxTeam,
       },
+      feeAmountPerHeadMinorUnits: settings.feeAmountMinorUnits,
+      feeTotalMinorUnits: settings.feeAmountMinorUnits * members.length,
       feeStatus: settings.hasFee ? "PENDING" : "NOT_REQUIRED",
       ...(state === "SUBMITTED" ? { submittedAt: FieldValue.serverTimestamp() } : {}),
       updatedAt: FieldValue.serverTimestamp(),
@@ -479,7 +624,7 @@ export const submitRegistration = makeCallable(async (uid, data) => {
       after: { teamId: teamRef.id, schoolId, seasonId, categoryCode, state },
     });
     await batch.commit();
-    return { teamId: teamRef.id, registrationId: registrationRef.id };
+    return { teamId: teamRef.id, displayTeamCode: teamCode, registrationId: registrationRef.id };
   } catch (error) {
     logger.error("Team registration submission failed", {
       operation: "submitRegistration",
@@ -604,6 +749,9 @@ export const verifyManualPayment = makeCallable(async (uid, data) => {
   }
   const paymentId = hashId(`${uid}:${invoiceId}:${idempotencyKey}`);
   const paymentRef = ref("payments", paymentId);
+  const registrationRef = typeof invoice.registrationId === "string"
+    ? ref("registrations", invoice.registrationId)
+    : undefined;
 
   await db.runTransaction(async (transaction) => {
     const existingPayment = await transaction.get(paymentRef);
@@ -617,6 +765,9 @@ export const verifyManualPayment = makeCallable(async (uid, data) => {
     const paymentsSnapshot = await transaction.get(
       db.collection("payments").where("invoiceId", "==", invoiceId),
     );
+    const registrationSnapshot = registrationRef
+      ? await transaction.get(registrationRef)
+      : undefined;
     if (!currentInvoice.exists || currentInvoice.data()!.status === "VOIDED") {
       return fail("failed-precondition", "The invoice is unavailable or voided.");
     }
@@ -682,6 +833,15 @@ export const verifyManualPayment = makeCallable(async (uid, data) => {
       status: paidAmountMinorUnits >= totalMinorUnits ? "VERIFIED" : "PARTIAL",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (registrationRef) {
+      if (!registrationSnapshot?.exists) {
+        return fail("failed-precondition", "The invoice registration no longer exists.");
+      }
+      transaction.update(registrationRef, {
+        feeStatus: paidAmountMinorUnits >= totalMinorUnits ? "VERIFIED" : "PARTIAL",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
     audit(transaction, uid, "MANUAL_PAYMENT_VERIFIED", "payment", pendingPayment?.id ?? paymentId, {
       invoiceId,
       status: pendingPayment ? "PENDING" : undefined,
@@ -695,6 +855,103 @@ export const verifyManualPayment = makeCallable(async (uid, data) => {
   });
   return { paymentId, status: "VERIFIED" };
 });
+
+export const setRegistrationPaymentStatus = makeCallable(async (uid, data) => {
+  const registrationId = requiredString(data, "registrationId", 150);
+  const paid = data.paid;
+  if (typeof paid !== "boolean") {
+    return fail("invalid-argument", "paid must be true or false.");
+  }
+  const registrationRef = ref("registrations", registrationId);
+  const registrationSnapshot = await registrationRef.get();
+  if (!registrationSnapshot.exists) return fail("failed-precondition", "The registration does not exist.");
+  const registration = registrationSnapshot.data()!;
+  if (typeof registration.schoolId !== "string" || typeof registration.seasonId !== "string" ||
+      typeof registration.categoryCode !== "string") {
+    return fail("failed-precondition", "The registration is missing its school, season, or category.");
+  }
+  const schoolSnapshot = await ref("schools", registration.schoolId).get();
+  if (!schoolSnapshot.exists) return fail("failed-precondition", "The registration school does not exist.");
+  await requireRole(uid, ["SUPER_ADMIN", "DISTRICT_ADMIN"], {
+    schoolId: registration.schoolId,
+    seasonId: registration.seasonId,
+    districtId: typeof schoolSnapshot.data()!.districtId === "string"
+      ? schoolSnapshot.data()!.districtId
+      : undefined,
+  });
+  if (!["SUBMITTED", "UNDER_REVIEW", "CORRECTION_REQUIRED", "APPROVED"].includes(String(registration.state))) {
+    return fail("failed-precondition", "Payment status can only be changed for submitted registrations.");
+  }
+
+  let feeAmountPerHeadMinorUnits = registration.feeAmountPerHeadMinorUnits;
+  if (!Number.isSafeInteger(feeAmountPerHeadMinorUnits) || feeAmountPerHeadMinorUnits <= 0) {
+    const categoryConfigSnapshot = await ref("config", "categories").get();
+    feeAmountPerHeadMinorUnits = getCategoryRegistrationSettings(
+      categoryConfigSnapshot.data(),
+      registration.categoryCode,
+    ).feeAmountMinorUnits;
+  }
+  if (!Number.isSafeInteger(feeAmountPerHeadMinorUnits) || feeAmountPerHeadMinorUnits <= 0) {
+    return fail("failed-precondition", "This registration has no per-student fee to mark as paid.");
+  }
+  const memberCountValue = registration.eligibilitySnapshot &&
+    typeof registration.eligibilitySnapshot === "object" &&
+    !Array.isArray(registration.eligibilitySnapshot)
+    ? (registration.eligibilitySnapshot as Data).memberCount
+    : undefined;
+  let memberCount = Number.isSafeInteger(memberCountValue) && (memberCountValue as number) > 0
+    ? memberCountValue as number
+    : undefined;
+  if (!memberCount && typeof registration.teamId === "string") {
+    const membersSnapshot = await db.collection("students").where("teamId", "==", registration.teamId).get();
+    memberCount = membersSnapshot.size;
+  }
+  if (!memberCount || memberCount <= 0) {
+    return fail("failed-precondition", "The registration has no student members to calculate its fee.");
+  }
+  const feeTotalMinorUnits = feeAmountPerHeadMinorUnits * memberCount;
+  if (!Number.isSafeInteger(feeTotalMinorUnits) || feeTotalMinorUnits > 1_000_000_000) {
+    return fail("failed-precondition", "The calculated per-student registration fee is invalid.");
+  }
+
+  return db.runTransaction(async (transaction) => {
+    const currentRegistration = await transaction.get(registrationRef);
+    if (!currentRegistration.exists) return fail("failed-precondition", "The registration no longer exists.");
+    const current = currentRegistration.data()!;
+    if (current.schoolId !== registration.schoolId || current.seasonId !== registration.seasonId ||
+        current.categoryCode !== registration.categoryCode || current.teamId !== registration.teamId) {
+      return fail("failed-precondition", "The registration changed while payment status was being updated.");
+    }
+    if (!["SUBMITTED", "UNDER_REVIEW", "CORRECTION_REQUIRED", "APPROVED"].includes(String(current.state))) {
+      return fail("failed-precondition", "Payment status can only be changed for submitted registrations.");
+    }
+    if (current.feeStatus === "NOT_REQUIRED") {
+      return fail("failed-precondition", "This registration has no fee configured.");
+    }
+    const nextFeeStatus = paid ? "VERIFIED" : "PENDING";
+    if (current.feeStatus === nextFeeStatus &&
+        current.feeAmountPerHeadMinorUnits === feeAmountPerHeadMinorUnits &&
+        current.feeTotalMinorUnits === feeTotalMinorUnits) {
+      return { registrationId, feeStatus: nextFeeStatus, feeTotalMinorUnits };
+    }
+    transaction.update(registrationRef, {
+      feeStatus: nextFeeStatus,
+      feeAmountPerHeadMinorUnits,
+      feeTotalMinorUnits,
+      feePaidAt: paid ? FieldValue.serverTimestamp() : null,
+      feePaidByUid: paid ? uid : null,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    audit(transaction, uid, paid ? "REGISTRATION_FEE_MARKED_PAID" : "REGISTRATION_FEE_MARKED_UNPAID", "registration", registrationId, {
+      feeStatus: current.feeStatus,
+    }, {
+      feeStatus: nextFeeStatus,
+      feeAmountPerHeadMinorUnits,
+      feeTotalMinorUnits,
+    });
+    return { registrationId, feeStatus: nextFeeStatus, feeTotalMinorUnits };
+  });
+}, "setRegistrationPaymentStatus", "public");
 
 export const reviewRegistration = makeCallable(async (uid, data) => {
   const registrationId = requiredString(data, "registrationId", 150);
@@ -766,7 +1023,7 @@ export const reviewRegistration = makeCallable(async (uid, data) => {
     });
   });
   return { registrationId, state: nextState };
-});
+}, "reviewRegistration", "public");
 
 export const stopArena = makeCallable(async (uid, data) => {
   const arenaId = requiredString(data, "arenaId", 150);
@@ -939,24 +1196,242 @@ export const commitTeamImport = makeCallable(async (uid, data) => {
       });
     }
     if (job.status !== "VALIDATED") return fail("failed-precondition", "Only a validated import can be committed.");
-  } else {
-    const schoolId = requiredString(data, "schoolId", 150);
-    requiredString(data, "seasonId", 150);
-    requiredString(data, "idempotencyKey", 150);
-    if (!Array.isArray(data.rows) || data.rows.length === 0 || data.rows.length > 400) {
-      return fail("invalid-argument", "rows must contain between 1 and 400 import rows.");
+    return fail(
+      "failed-precondition",
+      "This import job does not contain a server-validated row snapshot. Upload the CSV again to create a secure import.",
+    );
+  }
+
+  const schoolId = requiredString(data, "schoolId", 150);
+  const seasonId = requiredString(data, "seasonId", 150);
+  const idempotencyKey = requiredString(data, "idempotencyKey", 150);
+  if (!Array.isArray(data.rows) || data.rows.length === 0 || data.rows.length > MAX_TEAM_IMPORT_ROWS) {
+    return fail("invalid-argument", `rows must contain between 1 and ${MAX_TEAM_IMPORT_ROWS} student rows.`);
+  }
+
+  const rows = data.rows.map((value, index) => {
+    const row = asData(value);
+    return {
+      rowNumber: index + 1,
+      teamReference: requiredString(row, "teamReference", 100),
+      teamName: requiredString(row, "teamName", 120),
+      categoryCode: assertOneOf(row.categoryCode, REGISTRATION_CATEGORIES, "categoryCode"),
+      studentName: requiredString(row, "studentName", 120),
+      grade: requiredString(row, "grade", 40),
+      section: optionalString(row, "section", 40),
+      projectTitle: optionalString(row, "projectTitle", 300),
+    };
+  });
+
+  const groupedRows = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const group = groupedRows.get(row.teamReference) ?? [];
+    group.push(row);
+    groupedRows.set(row.teamReference, group);
+  }
+  const groups = [...groupedRows.entries()].map(([reference, members]) => {
+    const categories = new Set(members.map((member) => member.categoryCode));
+    const teamNames = new Set(members.map((member) => member.teamName.toLowerCase()));
+    const projectTitles = new Set(members.map((member) => member.projectTitle).filter(Boolean));
+    if (categories.size !== 1 || teamNames.size !== 1 || projectTitles.size > 1) {
+      return fail(
+        "invalid-argument",
+        `Rows for team_reference "${reference}" must use the same team name, category, and project title.`,
+      );
     }
-    const assignment = await ref("roleAssignments", `${uid}_SCHOOL_COORDINATOR`).get();
-    if (!assignment.exists || assignment.data()!.active !== true ||
-        assignment.data()!.role !== "SCHOOL_COORDINATOR" || assignment.data()!.scopeId !== schoolId) {
+    return {
+      reference,
+      teamName: members[0].teamName,
+      categoryCode: members[0].categoryCode,
+      projectTitle: members.find((member) => member.projectTitle)?.projectTitle,
+      members,
+    };
+  });
+  const payloadHash = hashId(JSON.stringify(rows.map(({ rowNumber: _rowNumber, ...row }) => row)));
+  const jobId = hashId(`${uid}:${schoolId}:${seasonId}:${idempotencyKey}`);
+  const jobRef = ref("importJobs", jobId);
+  const assignmentRef = ref("roleAssignments", `${uid}_SCHOOL_COORDINATOR`);
+  const seasonRef = ref("seasons", seasonId);
+  const categoriesRef = ref("config", "categories");
+  const schoolRef = ref("schools", schoolId);
+  const registrationRefs = groups.map(() => db.collection("registrations").doc());
+  const studentRefs = rows.map(() => db.collection("students").doc());
+
+  return db.runTransaction(async (transaction) => {
+    const [existingJob, assignmentSnapshot, seasonSnapshot, categorySnapshot, schoolSnapshot] = await Promise.all([
+      transaction.get(jobRef),
+      transaction.get(assignmentRef),
+      transaction.get(seasonRef),
+      transaction.get(categoriesRef),
+      transaction.get(schoolRef),
+    ]);
+
+    if (existingJob.exists) {
+      const existing = existingJob.data()!;
+      if (existing.uploaderUid !== uid || existing.payloadHash !== payloadHash) {
+        return fail("failed-precondition", "This idempotency key was already used for a different import.");
+      }
+      return {
+        jobId,
+        importJobId: jobId,
+        status: existing.status,
+        teamsCreated: existing.counts?.teamsCreated,
+        studentsCreated: existing.counts?.studentsCreated,
+      };
+    }
+
+    if (!assignmentSnapshot.exists || assignmentSnapshot.data()!.uid !== uid ||
+        assignmentSnapshot.data()!.active !== true || assignmentSnapshot.data()!.role !== "SCHOOL_COORDINATOR" ||
+        assignmentSnapshot.data()!.scopeId !== schoolId) {
       return fail("permission-denied", "The import school must match the authenticated coordinator's active assignment.");
     }
-  }
-  return fail(
-    "failed-precondition",
-    "The import workflow has no server-owned validated-row snapshot and complete idempotent job contract; raw client preview rows cannot be committed safely.",
-  );
-});
+    if (!seasonSnapshot.exists) return fail("failed-precondition", "The selected season does not exist.");
+    assertRegistrationOpen(seasonSnapshot.data()!);
+    if (!schoolSnapshot.exists) return fail("failed-precondition", "The assigned school does not exist.");
+
+    const settingsByCategory = new Map<string, ReturnType<typeof getCategoryRegistrationSettings>>();
+    for (const group of groups) {
+      let settings = settingsByCategory.get(group.categoryCode);
+      if (!settings) {
+        settings = getCategoryRegistrationSettings(categorySnapshot.data(), group.categoryCode);
+        settingsByCategory.set(group.categoryCode, settings);
+      }
+      if (group.members.length < settings.minTeam || group.members.length > settings.maxTeam) {
+        return fail(
+          "invalid-argument",
+          `Team "${group.teamName}" requires between ${settings.minTeam} and ${settings.maxTeam} students; found ${group.members.length}.`,
+        );
+      }
+    }
+
+    const categoryCodes = [...new Set(groups.map((group) => group.categoryCode))];
+    const counterRefs = new Map(categoryCodes.map((categoryCode) => [
+      categoryCode,
+      ref("teamCodeCounters", categoryCode),
+    ]));
+    const counterSnapshots = await Promise.all(
+      categoryCodes.map((categoryCode) => transaction.get(counterRefs.get(categoryCode)!)),
+    );
+    const existingTeamSnapshots = await Promise.all(categoryCodes.map((categoryCode, index) => {
+      if (counterSnapshots[index].exists) return Promise.resolve(undefined);
+      return transaction.get(db.collection("teams").where("categoryCode", "==", categoryCode));
+    }));
+    const nextByCategory = new Map<string, number>();
+    categoryCodes.forEach((categoryCode, index) => {
+      const storedNext = counterSnapshots[index].data()?.nextNumber;
+      const prefix = categoryTeamPrefix(categoryCode);
+      const next = Number.isSafeInteger(storedNext) && (storedNext as number) > 0
+        ? storedNext as number
+        : highestExistingTeamNumber(existingTeamSnapshots[index]!, prefix) + 1;
+      const teamCount = groups.filter((group) => group.categoryCode === categoryCode).length;
+      if (next + teamCount - 1 > 9999) {
+        return fail("failed-precondition", `The ${categoryCode} team ID sequence is full (maximum ${prefix}9999).`);
+      }
+      nextByCategory.set(categoryCode, next);
+    });
+    const teamCodes = groups.map((group) => {
+      const next = nextByCategory.get(group.categoryCode)!;
+      nextByCategory.set(group.categoryCode, next + 1);
+      const prefix = categoryTeamPrefix(group.categoryCode);
+      return `${prefix}${String(next).padStart(4, "0")}`;
+    });
+    for (const categoryCode of categoryCodes) {
+      transaction.set(counterRefs.get(categoryCode)!, {
+        nextNumber: nextByCategory.get(categoryCode),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    const now = FieldValue.serverTimestamp();
+    transaction.create(jobRef, {
+      id: jobId,
+      schoolId,
+      uploaderUid: uid,
+      seasonId,
+      sourceFilePath: "",
+      status: "COMPLETED",
+      counts: {
+        totalRows: rows.length,
+        validRows: rows.length,
+        invalidRows: 0,
+        teamsCreated: groups.length,
+        studentsCreated: rows.length,
+      },
+      idempotencyKey,
+      payloadHash,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    let studentIndex = 0;
+    groups.forEach((group, groupIndex) => {
+      const teamRef = ref("teams", teamCodes[groupIndex]);
+      const registrationRef = registrationRefs[groupIndex];
+      const settings = settingsByCategory.get(group.categoryCode)!;
+      transaction.create(teamRef, {
+        id: teamRef.id,
+        displayTeamCode: teamCodes[groupIndex],
+        seasonId,
+        schoolId,
+        categoryCode: group.categoryCode,
+        teamName: group.teamName,
+        ...(group.projectTitle ? { projectTitle: group.projectTitle } : {}),
+        createdBy: uid,
+        importJobId: jobId,
+        importTeamReference: group.reference,
+        createdAt: now,
+      });
+      group.members.forEach((member) => {
+        const studentRef = studentRefs[studentIndex++];
+        transaction.create(studentRef, {
+          id: studentRef.id,
+          schoolId,
+          teamId: teamRef.id,
+          name: member.studentName,
+          grade: member.grade,
+          ...(member.section ? { section: member.section } : {}),
+          createdAt: now,
+        });
+      });
+      transaction.create(registrationRef, {
+        id: registrationRef.id,
+        teamId: teamRef.id,
+        schoolId,
+        seasonId,
+        categoryCode: group.categoryCode,
+        state: "SUBMITTED",
+        eligibilitySnapshot: {
+          memberCount: group.members.length,
+          minTeam: settings.minTeam,
+          maxTeam: settings.maxTeam,
+        },
+        feeAmountPerHeadMinorUnits: settings.feeAmountMinorUnits,
+        feeTotalMinorUnits: settings.feeAmountMinorUnits * group.members.length,
+        feeStatus: settings.hasFee ? "PENDING" : "NOT_REQUIRED",
+        importJobId: jobId,
+        submittedAt: now,
+        updatedAt: now,
+        createdAt: now,
+      });
+      audit(transaction, uid, "REGISTRATION_SUBMITTED", "registration", registrationRef.id, undefined, {
+        teamId: teamRef.id,
+        schoolId,
+        seasonId,
+        categoryCode: group.categoryCode,
+        state: "SUBMITTED",
+        importJobId: jobId,
+      });
+    });
+
+    return {
+      jobId,
+      importJobId: jobId,
+      status: "COMPLETED",
+      teamsCreated: groups.length,
+      studentsCreated: rows.length,
+    };
+  });
+}, "commitTeamImport", "public");
 
 export const approveQualifiers = makeCallable(async (uid, data) => {
   const eventId = requiredString(data, "eventId", 150);

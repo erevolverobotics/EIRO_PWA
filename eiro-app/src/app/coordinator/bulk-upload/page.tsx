@@ -34,6 +34,7 @@ interface ImportJob {
 }
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as CategoryCode[];
+const MAX_IMPORT_ROWS = 99;
 const TEMPLATE = [
   'team_reference,team_name,category_code,student_name,grade,section,project_title,coordinator_name,coordinator_phone',
   'T001,Example Team,SUMO,Student One,7,A,,,',
@@ -111,7 +112,7 @@ export default function BulkUploadPage() {
   const groups = useMemo(() => groupRows(rows), [rows]);
   const validGroups = groups.filter(group => group.valid);
   const invalidRows = rows.filter(row => !row.valid);
-  const validRows = rows.filter(row => row.valid);
+  const committableRows = validGroups.flatMap(group => group.members);
 
   const handleFile = async (file: File) => {
     setError('');
@@ -188,6 +189,10 @@ export default function BulkUploadPage() {
         setError('The CSV contains no student rows.');
         return;
       }
+      if (parsedRows.length > MAX_IMPORT_ROWS) {
+        setError(`CSV imports are limited to ${MAX_IMPORT_ROWS} student rows per upload. Split this file into smaller CSVs.`);
+        return;
+      }
       setRows(parsedRows);
       setStep('preview');
     } catch (parseError) {
@@ -197,7 +202,7 @@ export default function BulkUploadPage() {
   };
 
   const commit = async () => {
-    if (!schoolId || !user || !seasonId || !idempotencyKey || validRows.length === 0) return;
+    if (!schoolId || !user || !seasonId || !idempotencyKey || committableRows.length === 0) return;
     setSaving(true);
     setError('');
     setStep('committing');
@@ -208,7 +213,7 @@ export default function BulkUploadPage() {
       >('commitTeamImport', {
         schoolId,
         seasonId,
-        rows: validRows.map(({ teamReference, teamName, categoryCode, studentName, grade, section, projectTitle }) => ({
+        rows: committableRows.map(({ teamReference, teamName, categoryCode, studentName, grade, section, projectTitle }) => ({
           teamReference, teamName, categoryCode, studentName, grade, section, projectTitle,
         })),
         idempotencyKey,
@@ -278,12 +283,12 @@ export default function BulkUploadPage() {
           {step === 'preview' && (
             <div className="space-y-4">
               <Card className="flex flex-wrap items-center justify-between gap-3">
-                <div><p className="font-semibold text-white">{fileName}</p><p className="text-xs text-gray-500 mt-1">{rows.length} parsed student rows · backend performs authoritative eligibility and duplicate checks</p></div>
+                <div><p className="font-semibold text-white">{fileName}</p><p className="text-xs text-gray-500 mt-1">{rows.length} parsed student rows · maximum {MAX_IMPORT_ROWS} per upload</p></div>
                 <Button variant="secondary" icon={RefreshCw} onClick={() => { setStep('idle'); setRows([]); setError(''); }}>Choose another CSV</Button>
               </Card>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <Summary title="Rows" value={rows.length} />
-                <Summary title="Locally valid" value={validRows.length} />
+                <Summary title="Ready rows" value={committableRows.length} />
                 <Summary title="Needs correction" value={invalidRows.length} />
                 <Summary title="Teams" value={groups.length} />
               </div>
@@ -315,7 +320,7 @@ export default function BulkUploadPage() {
               <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-3" />
               <h2 className="text-xl font-bold text-white">Import submitted</h2>
               <p className="text-sm text-gray-400 mt-2">Job: <span className="font-mono text-indigo-300">{jobId}</span></p>
-              <p className="text-sm text-gray-500 mt-1">{validGroups.length} teams · {validRows.length} valid student rows submitted.</p>
+              <p className="text-sm text-gray-500 mt-1">{validGroups.length} teams · {committableRows.length} student rows submitted.</p>
               <Button className="mt-5" onClick={() => { setRows([]); setFileName(''); setJobId(''); setIdempotencyKey(''); setStep('idle'); }}>Upload another CSV</Button>
             </Card>
           )}

@@ -92,6 +92,8 @@ eiro-app/
 | Judge | `/judge` | Score submission, timed runs, matches |
 | Head Judge | `/judge` | + Score verification & locking |
 | Venue Coordinator | `/venue` | Check-in, payments, queue, adjustments |
+| Check-in Volunteer | `/venue` | Team check-in at an assigned venue |
+| Public Viewer | `/` | Public events and results |
 
 ---
 
@@ -114,6 +116,10 @@ Season Setup (Admin)
                                                         ├─► Head Judge Verification & Lock
                                                         └─► Results Publication + Certificates
 ```
+
+New team IDs use a category prefix and a four-digit sequence, for example `SU0001`
+for SUMO or `IJ0001` for INNOVATOR_JUNIOR. Sequences increment independently per
+category and are shared by manual and CSV registrations.
 
 ---
 

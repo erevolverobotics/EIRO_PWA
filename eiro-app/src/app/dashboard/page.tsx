@@ -4,13 +4,14 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/firebase/auth-context';
 import { Loader2, Bot } from 'lucide-react';
+import type { UserRole } from '@/lib/types';
 
 /**
  * /dashboard — Smart redirect hub.
  * Waits for auth to resolve, then sends the user to their
  * role-appropriate area. Unauthenticated users are sent to /login.
  */
-const ROLE_ROUTES: Record<string, string> = {
+const ROLE_ROUTES: Record<UserRole, string> = {
   SUPER_ADMIN: '/admin',
   DISTRICT_ADMIN: '/admin',
   HEAD_JUDGE: '/judge',
