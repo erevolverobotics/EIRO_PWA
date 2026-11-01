@@ -47,6 +47,7 @@ export default function RegistrationsPage() {
       .then(([registrationData, teamData, students]) => {
         if (!active) return;
         const registeredTeamIds = new Set(registrationData.map(r => r.teamId));
+        setExpandedTeams(new Set(registeredTeamIds));
 
         // Build per-team member list
         const memberMap: Record<string, MemberInfo[]> = {};

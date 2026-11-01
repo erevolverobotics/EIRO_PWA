@@ -1,0 +1,611 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { collection, doc, getDoc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { AlertCircle, Pencil, RefreshCw, Search, Trash2, Users } from 'lucide-react';
+import { Button, Card, CategoryBadge, Input, Modal, PageHeader } from '@/components/ui';
+import { db } from '@/lib/firebase/config';
+import type { CategoryCode } from '@/lib/types';
+import { useAuth } from '@/lib/firebase/auth-context';
+import { callEiroFunction } from '@/lib/firebase/functions';
+import toast from 'react-hot-toast';
+
+interface SchoolRow {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface DirectoryStudent {
+  id: string;
+  name: string;
+  grade: string;
+  section: string;
+  schoolId: string;
+  schoolName: string;
+  teamId: string;
+  teamName: string;
+  categoryCode?: CategoryCode;
+  seasonId?: string;
+  teamSize: number;
+  minimumTeamSize?: number;
+}
+
+interface RegisteredTeam {
+  id: string;
+  teamName: string;
+  schoolId: string;
+  categoryCode?: CategoryCode;
+  seasonId?: string;
+  registrationCount: number;
+  registrationState: string;
+  memberCount: number;
+  minimumTeamSize?: number;
+  maximumTeamSize?: number;
+}
+
+const compareText = (left: string, right: string) =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+
+export default function AdminStudentsPage() {
+  const { roles } = useAuth();
+  const [schools, setSchools] = useState<SchoolRow[]>([]);
+  const [students, setStudents] = useState<DirectoryStudent[]>([]);
+  const [registeredTeams, setRegisteredTeams] = useState<RegisteredTeam[]>([]);
+  const [schoolFilter, setSchoolFilter] = useState('ALL');
+  const [gradeFilter, setGradeFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [sortBy, setSortBy] = useState('school');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [editingStudent, setEditingStudent] = useState<DirectoryStudent | null>(null);
+  const [editForm, setEditForm] = useState({ name: '', grade: '', section: '' });
+  const [deletingStudent, setDeletingStudent] = useState<DirectoryStudent | null>(null);
+  const [destinationTeamId, setDestinationTeamId] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const canEditStudents = roles.some(role =>
+    role.active && ['SUPER_ADMIN', 'DISTRICT_ADMIN'].includes(role.role)
+  );
+  const canDeleteStudents = canEditStudents;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [schoolSnapshot, teamSnapshot, registrationSnapshot, studentSnapshot, categorySnapshot] = await Promise.all([
+        getDocs(collection(db, 'schools')),
+        getDocs(collection(db, 'teams')),
+        getDocs(collection(db, 'registrations')),
+        getDocs(collection(db, 'students')),
+        getDoc(doc(db, 'config', 'categories')),
+      ]);
+      const categoryConfig = categorySnapshot.exists() ? categorySnapshot.data() : {};
+
+      const schoolById = new Map<string, SchoolRow>();
+      schoolSnapshot.docs.forEach(snapshot => {
+        const data = snapshot.data();
+        schoolById.set(snapshot.id, {
+          id: snapshot.id,
+          name: typeof data.name === 'string' ? data.name : snapshot.id,
+          code: typeof data.schoolCode === 'string' ? data.schoolCode : '',
+        });
+      });
+
+      const registrationsByTeam = new Map<string, {
+        count: number;
+        state: string;
+        seasonId?: string;
+      }>();
+      registrationSnapshot.docs.forEach(snapshot => {
+        const data = snapshot.data();
+        if (typeof data.teamId !== 'string') return;
+        const current = registrationsByTeam.get(data.teamId);
+        registrationsByTeam.set(data.teamId, {
+          count: (current?.count ?? 0) + 1,
+          state: typeof data.state === 'string' ? data.state : '',
+          seasonId: typeof data.seasonId === 'string' ? data.seasonId : current?.seasonId,
+        });
+      });
+      const teamsById = new Map<string, Omit<RegisteredTeam, 'memberCount'>>();
+      teamSnapshot.docs.forEach(snapshot => {
+        const registration = registrationsByTeam.get(snapshot.id);
+        if (!registration) return;
+        const data = snapshot.data();
+        if (typeof data.schoolId !== 'string') return;
+        const categoryCode = typeof data.categoryCode === 'string' ? data.categoryCode as CategoryCode : undefined;
+        const categorySettings = categoryCode
+          ? categoryConfig[categoryCode] as { minTeam?: unknown; maxTeam?: unknown } | undefined
+          : undefined;
+        const minimumTeamSize = categorySettings?.minTeam;
+        const maximumTeamSize = categorySettings?.maxTeam;
+        teamsById.set(snapshot.id, {
+          id: snapshot.id,
+          schoolId: data.schoolId,
+          teamName: typeof data.teamName === 'string'
+            ? data.teamName
+            : typeof data.displayTeamCode === 'string' ? data.displayTeamCode : snapshot.id,
+          categoryCode,
+          seasonId: typeof data.seasonId === 'string' ? data.seasonId : registration.seasonId,
+          registrationCount: registration.count,
+          registrationState: registration.state,
+          minimumTeamSize: typeof minimumTeamSize === 'number' &&
+            Number.isSafeInteger(minimumTeamSize) && minimumTeamSize > 0
+            ? minimumTeamSize
+            : undefined,
+          maximumTeamSize: typeof maximumTeamSize === 'number' &&
+            Number.isSafeInteger(maximumTeamSize) && maximumTeamSize > 0
+            ? maximumTeamSize
+            : undefined,
+        });
+      });
+
+      const teamSizes = new Map<string, number>();
+      studentSnapshot.docs.forEach(snapshot => {
+        const teamId = snapshot.data().teamId;
+        if (typeof teamId === 'string') teamSizes.set(teamId, (teamSizes.get(teamId) ?? 0) + 1);
+      });
+
+      const directory: DirectoryStudent[] = studentSnapshot.docs.flatMap(snapshot => {
+        const data = snapshot.data();
+        const teamId = typeof data.teamId === 'string' ? data.teamId : '';
+        const team = teamsById.get(teamId);
+        const schoolId = typeof data.schoolId === 'string' ? data.schoolId : team?.schoolId;
+        if (!team || !schoolId || team.schoolId !== schoolId) return [];
+        const school = schoolById.get(schoolId);
+        const categorySettings = team.categoryCode
+          ? categoryConfig[team.categoryCode] as { minTeam?: unknown } | undefined
+          : undefined;
+        const minimumTeamSize = categorySettings?.minTeam;
+        return [{
+          id: snapshot.id,
+          name: typeof data.name === 'string'
+            ? data.name
+            : typeof data.studentName === 'string' ? data.studentName
+              : typeof data.fullName === 'string' ? data.fullName : '—',
+          grade: typeof data.grade === 'string'
+            ? data.grade
+            : typeof data.class === 'string' ? data.class : '',
+          section: typeof data.section === 'string' ? data.section : '',
+          schoolId,
+          schoolName: school?.name ?? schoolId,
+          teamId,
+          teamName: team.teamName,
+          categoryCode: team.categoryCode,
+          seasonId: team.seasonId,
+          teamSize: teamSizes.get(teamId) ?? 0,
+          minimumTeamSize: typeof minimumTeamSize === 'number' &&
+            Number.isSafeInteger(minimumTeamSize) && minimumTeamSize > 0 ? minimumTeamSize : undefined,
+        }];
+      });
+
+      setRegisteredTeams([...teamsById.values()].map(team => ({
+        ...team,
+        memberCount: teamSizes.get(team.id) ?? 0,
+      })));
+      const registeredSchoolIds = new Set(
+        [...teamsById.values()].map(team => team.schoolId)
+      );
+      setSchools([...schoolById.values()]
+        .filter(school => registeredSchoolIds.has(school.id))
+        .sort((left, right) => compareText(left.name, right.name)));
+      setStudents(directory);
+      setError('');
+    } catch (loadError) {
+      console.error('Failed to load registered student directory', loadError);
+      setError('Registered schools and students could not be loaded. Check administrator access and retry.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const grades = useMemo(() =>
+    [...new Set(students.map(student => student.grade).filter(Boolean))]
+      .sort(compareText), [students]);
+  const categories = useMemo(() =>
+    [...new Set(students.map(student => student.categoryCode).filter(
+      (category): category is CategoryCode => Boolean(category)
+    ))].sort(compareText), [students]);
+
+  const filteredStudents = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return students
+      .filter(student =>
+        (schoolFilter === 'ALL' || student.schoolId === schoolFilter) &&
+        (gradeFilter === 'ALL' || student.grade === gradeFilter) &&
+        (categoryFilter === 'ALL' || student.categoryCode === categoryFilter) &&
+        (!term || [
+          student.name, student.schoolName, student.teamName,
+          student.grade, student.section, student.categoryCode ?? '',
+        ].some(value => value.toLowerCase().includes(term)))
+      )
+      .sort((left, right) => {
+        if (sortBy === 'student') return compareText(left.name, right.name);
+        if (sortBy === 'grade') {
+          return compareText(left.grade, right.grade) || compareText(left.name, right.name);
+        }
+        if (sortBy === 'category') {
+          return compareText(left.categoryCode ?? '', right.categoryCode ?? '') ||
+            compareText(left.name, right.name);
+        }
+        return compareText(left.schoolName, right.schoolName) ||
+          compareText(left.name, right.name);
+      });
+  }, [students, schoolFilter, gradeFilter, categoryFilter, search, sortBy]);
+
+  const openEdit = (student: DirectoryStudent) => {
+    setEditingStudent(student);
+    setEditForm({ name: student.name === '—' ? '' : student.name, grade: student.grade, section: student.section });
+  };
+
+  const saveStudent = async () => {
+    if (!editingStudent) return;
+    const name = editForm.name.trim();
+    const grade = editForm.grade.trim();
+    const section = editForm.section.trim();
+    if (!name || !grade) {
+      toast.error('Student name and class are required.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'students', editingStudent.id), {
+        name,
+        grade,
+        section: section || null,
+        updatedAt: serverTimestamp(),
+      });
+      setStudents(current => current.map(student => student.id === editingStudent.id
+        ? { ...student, name, grade, section }
+        : student));
+      setEditingStudent(null);
+      toast.success('Student details updated.');
+    } catch (saveError) {
+      console.error('Failed to update student record', saveError);
+      toast.error('Student details could not be updated. Check your permissions and retry.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteStudent = async () => {
+    if (!deletingStudent) return;
+    if (wouldViolateTeamSize(deletingStudent)) {
+      if (!selectedDestinationTeam) {
+        toast.error('Choose an eligible destination team before continuing.');
+        return;
+      }
+    }
+    setSaving(true);
+    try {
+      await callEiroFunction<
+        { studentId: string; destinationTeamId?: string },
+        { studentId: string; memberCount: number; feeStatus: string; feeTotalMinorUnits: number; movedMemberCount?: number }
+      >('deleteRegisteredStudent', {
+        studentId: deletingStudent.id,
+        ...(wouldViolateTeamSize(deletingStudent) ? { destinationTeamId } : {}),
+      });
+      setDeletingStudent(null);
+      setDestinationTeamId('');
+      await load();
+      toast.success(wouldViolateTeamSize(deletingStudent)
+        ? 'Student deleted and the remaining team members were moved.'
+        : 'Student record deleted.');
+    } catch (deleteError) {
+      console.error('Failed to delete student record', deleteError);
+      toast.error(deleteError instanceof Error
+        ? deleteError.message
+        : 'Student record could not be deleted. Check your admin access and retry.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const wouldViolateTeamSize = (student: DirectoryStudent) =>
+    student.minimumTeamSize !== undefined &&
+    student.teamSize - 1 < student.minimumTeamSize;
+  const getDestinationTeamCandidates = (student: DirectoryStudent) =>
+    registeredTeams.filter(team =>
+      team.id !== student.teamId &&
+      team.schoolId === student.schoolId
+    );
+  const getDestinationTeamBlockReason = (student: DirectoryStudent, team: RegisteredTeam) => {
+    const remainingMemberCount = student.teamSize - 1;
+    if (team.categoryCode !== student.categoryCode) {
+      return `Different category (${team.categoryCode ?? 'unknown'}).`;
+    }
+    if (!student.seasonId || team.seasonId !== student.seasonId) {
+      return 'Different or missing season.';
+    }
+    if (team.registrationCount !== 1) {
+      return 'Must have exactly one registration.';
+    }
+    if (!['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'CORRECTION_REQUIRED', 'APPROVED'].includes(team.registrationState)) {
+      return `Registration is ${team.registrationState || 'unknown'} and cannot be changed.`;
+    }
+    if (team.minimumTeamSize === undefined || team.maximumTeamSize === undefined) {
+      return 'Category team-size settings are unavailable.';
+    }
+    const updatedMemberCount = team.memberCount + remainingMemberCount;
+    if (updatedMemberCount < team.minimumTeamSize) {
+      return `Would have ${updatedMemberCount}; minimum is ${team.minimumTeamSize}.`;
+    }
+    if (updatedMemberCount > team.maximumTeamSize) {
+      return `Would have ${updatedMemberCount}; maximum is ${team.maximumTeamSize}.`;
+    }
+    return null;
+  };
+  const destinationTeams = deletingStudent
+    ? getDestinationTeamCandidates(deletingStudent)
+    : [];
+  const selectedDestinationTeam = deletingStudent
+    ? destinationTeams.find(team =>
+      team.id === destinationTeamId &&
+      getDestinationTeamBlockReason(deletingStudent, team) === null
+    )
+    : undefined;
+
+  return (
+    <div className="space-y-6 animate-fade-in-up">
+      <PageHeader
+        title="Registered Schools & Students"
+        subtitle="Browse registered student rosters by school, class, and category."
+        actions={<Button variant="secondary" icon={RefreshCw} onClick={() => void load()} disabled={loading}>Refresh</Button>}
+      />
+
+      {error ? (
+        <div role="alert">
+          <Card className="flex items-start gap-3 text-sm text-red-300">
+            <AlertCircle className="w-5 h-5 shrink-0" />
+            <div>
+              <p>{error}</p>
+              <Button className="mt-3" variant="secondary" onClick={() => void load()}>Retry</Button>
+            </div>
+          </Card>
+        </div>
+      ) : (
+        <>
+          <Card className="flex items-center gap-3">
+            <Users className="w-5 h-5 text-indigo-400" />
+            <p className="text-sm text-gray-300">
+              {loading ? 'Loading…' : `${schools.length} registered schools · ${students.length} registered students`}
+            </p>
+          </Card>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+            <select aria-label="Filter by school" value={schoolFilter} onChange={event => setSchoolFilter(event.target.value)} className="eiro-input">
+              <option value="ALL">All registered schools</option>
+              {schools.map(school => (
+                <option key={school.id} value={school.id}>{school.name}{school.code ? ` (${school.code})` : ''}</option>
+              ))}
+            </select>
+            <select aria-label="Filter by class" value={gradeFilter} onChange={event => setGradeFilter(event.target.value)} className="eiro-input">
+              <option value="ALL">All classes</option>
+              {grades.map(grade => <option key={grade} value={grade}>{grade}</option>)}
+            </select>
+            <select aria-label="Filter by category" value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)} className="eiro-input">
+              <option value="ALL">All categories</option>
+              {categories.map(category => <option key={category} value={category}>{category.replaceAll('_', ' ')}</option>)}
+            </select>
+            <select aria-label="Sort students by" value={sortBy} onChange={event => setSortBy(event.target.value)} className="eiro-input">
+              <option value="school">Sort: School</option>
+              <option value="student">Sort: Student name</option>
+              <option value="grade">Sort: Class</option>
+              <option value="category">Sort: Category</option>
+            </select>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <input
+                type="search"
+                aria-label="Search registered students"
+                placeholder="Search students, team, school…"
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                className="eiro-input w-full pl-9"
+              />
+            </div>
+          </div>
+
+          {loading ? (
+            <Card className="text-center text-gray-400">Loading registered students…</Card>
+          ) : filteredStudents.length === 0 ? (
+            <Card className="text-center py-12 text-gray-400">No registered students match these filters.</Card>
+          ) : (
+            <Card padding="none">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-white/10 bg-white/[0.03] text-xs uppercase text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3">Student</th>
+                      <th className="px-4 py-3">Class</th>
+                      <th className="px-4 py-3">Section</th>
+                      <th className="px-4 py-3">School</th>
+                      <th className="px-4 py-3">Team</th>
+                      <th className="px-4 py-3">Category</th>
+                      {(canEditStudents || canDeleteStudents) && <th className="px-4 py-3">Actions</th>}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {filteredStudents.map(student => (
+                      <tr key={student.id} className="text-gray-300 hover:bg-white/[0.03]">
+                        <td className="px-4 py-3 font-medium text-white">{student.name}</td>
+                        <td className="px-4 py-3">{student.grade || '—'}</td>
+                        <td className="px-4 py-3">{student.section || '—'}</td>
+                        <td className="px-4 py-3">{student.schoolName}</td>
+                        <td className="px-4 py-3">{student.teamName}</td>
+                        <td className="px-4 py-3">
+                          {student.categoryCode ? <CategoryBadge code={student.categoryCode} /> : '—'}
+                        </td>
+                        {(canEditStudents || canDeleteStudents) && (
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              {canEditStudents && (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  icon={Pencil}
+                                  aria-label={`Edit ${student.name}`}
+                                  onClick={() => openEdit(student)}
+                                >
+                                  Edit
+                                </Button>
+                              )}
+                              {canDeleteStudents && (
+                                <Button
+                                  size="sm"
+                                  variant="danger"
+                                  icon={Trash2}
+                                  aria-label={`Delete ${student.name}`}
+                                  onClick={() => {
+                                    setDestinationTeamId('');
+                                    setDeletingStudent(student);
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+
+      <Modal
+        open={Boolean(editingStudent)}
+        onClose={() => { if (!saving) setEditingStudent(null); }}
+        title={`Edit Student${editingStudent ? ` — ${editingStudent.name}` : ''}`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditingStudent(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={() => void saveStudent()} loading={saving}>Save Changes</Button>
+          </>
+        }
+      >
+        {editingStudent && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-400">
+              {editingStudent.schoolName} · {editingStudent.teamName}
+            </p>
+            <Input
+              label="Student name"
+              value={editForm.name}
+              onChange={event => setEditForm(current => ({ ...current, name: event.target.value }))}
+              maxLength={120}
+              required
+            />
+            <Input
+              label="Class / grade"
+              value={editForm.grade}
+              onChange={event => setEditForm(current => ({ ...current, grade: event.target.value }))}
+              maxLength={40}
+              required
+            />
+            <Input
+              label="Section"
+              value={editForm.section}
+              onChange={event => setEditForm(current => ({ ...current, section: event.target.value }))}
+              maxLength={40}
+            />
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(deletingStudent)}
+        onClose={() => { if (!saving) setDeletingStudent(null); }}
+        title={deletingStudent && wouldViolateTeamSize(deletingStudent)
+          ? 'Delete Student and Move Remaining Members?'
+          : 'Delete Student Record?'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeletingStudent(null)} disabled={saving}>Cancel</Button>
+            <Button
+              variant="danger"
+              icon={Trash2}
+              onClick={() => void deleteStudent()}
+              loading={saving}
+              disabled={Boolean(
+                deletingStudent &&
+                wouldViolateTeamSize(deletingStudent) &&
+                !selectedDestinationTeam
+              )}
+            >
+              {deletingStudent && wouldViolateTeamSize(deletingStudent)
+                ? 'Delete & Move Team'
+                : 'Delete Student'}
+            </Button>
+          </>
+        }
+      >
+        {deletingStudent && (
+          <div className="space-y-2 text-sm text-gray-300">
+            <p>
+              Permanently delete <strong className="text-white">{deletingStudent.name}</strong> from
+              team <strong className="text-white">{deletingStudent.teamName}</strong>?
+            </p>
+            {wouldViolateTeamSize(deletingStudent) ? (
+              <div className="space-y-3">
+                <p role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-amber-200">
+                  Deleting this student would leave {deletingStudent.teamName} below its minimum of {deletingStudent.minimumTeamSize}.
+                  Select another registered team for the remaining {deletingStudent.teamSize - 1} member(s).
+                  The delete and move are saved together only after you confirm.
+                </p>
+                <p className="text-xs text-gray-400">
+                  The destination must not have event entries or invoices. Moving members into an approved team updates its roster and recalculates its fee.
+                </p>
+                <label className="block space-y-1 text-sm">
+                  <span className="text-gray-300">Destination team</span>
+                  <select
+                    aria-label="Destination team for remaining members"
+                    className="eiro-input w-full"
+                    value={destinationTeamId}
+                    onChange={event => setDestinationTeamId(event.target.value)}
+                  >
+                    <option value="">Select a team</option>
+                    {destinationTeams.map(team => {
+                      const blockReason = getDestinationTeamBlockReason(deletingStudent, team);
+                      return (
+                        <option key={team.id} value={team.id} disabled={Boolean(blockReason)}>
+                          {team.teamName} · {team.categoryCode ?? 'Category unknown'} · {team.memberCount} members
+                          {blockReason ? ` — ${blockReason}` : ` → ${team.memberCount + deletingStudent.teamSize - 1} members`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                {destinationTeams.length === 0 && (
+                  <p role="alert" className="text-amber-200">
+                    No other registered teams were found for this school.
+                  </p>
+                )}
+                {destinationTeams.length > 0 && !destinationTeams.some(team =>
+                  getDestinationTeamBlockReason(deletingStudent, team) === null
+                ) && (
+                  <p role="alert" className="text-amber-200">
+                    No listed team can accept these members yet. The options show why each team is unavailable.
+                  </p>
+                )}
+              </div>
+            ) : null}
+            <p className="text-amber-300">
+              This permanently removes the selected student record. Other roster changes are reversible only through an administrator.
+            </p>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}

@@ -5,7 +5,7 @@ import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
   LayoutDashboard, Settings, Users, School, Trophy, Calendar,
-  MapPin, ClipboardList, BarChart3, Award, FileText, ShieldCheck,
+  MapPin, ClipboardList, BarChart3, Award, FileText, ShieldCheck, UserRound,
   Shuffle, History, Upload, CreditCard, UserCheck, Zap
 } from 'lucide-react';
 import { usePathname } from 'next/navigation';
@@ -17,6 +17,7 @@ const ADMIN_NAV: NavItem[] = [
   { label: 'Categories & Rules', href: '/admin/categories', icon: Settings },
   { label: 'Districts & Venues', href: '/admin/districts', icon: MapPin },
   { label: 'Team Approvals', href: '/admin/schools', icon: School, badge: 3 },
+  { label: 'Student Directory', href: '/admin/students', icon: UserRound },
   { label: 'School Applications', href: '/admin/school-applications', icon: ClipboardList },
   { label: 'Staff & Judges', href: '/admin/staff', icon: Users },
   { label: 'Schedule Builder', href: '/admin/schedule', icon: Calendar },

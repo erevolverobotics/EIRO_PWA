@@ -1,6 +1,7 @@
 // Shared UI components for EIRO Platform
 'use client';
 
+import { useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 import { Loader2, TrendingUp, TrendingDown, Minus } from 'lucide-react';
@@ -392,16 +393,37 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, size = 'md', footer }: ModalProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
   const sizeMap = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-4xl' };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className={cn('relative w-full glass rounded-2xl border border-white/10 shadow-2xl animate-fade-in-up', sizeMap[size])}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={cn('relative w-full glass rounded-2xl border border-white/10 shadow-2xl animate-fade-in-up', sizeMap[size])}
+      >
         <div className="flex items-center justify-between p-6 border-b border-white/5">
           <h3 className="text-lg font-semibold text-white">{title}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors">✕</button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close dialog"
+            className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+          >
+            ✕
+          </button>
         </div>
         <div className="p-6">{children}</div>
         {footer && <div className="px-6 pb-6 flex gap-3 justify-end border-t border-white/5 pt-4">{footer}</div>}

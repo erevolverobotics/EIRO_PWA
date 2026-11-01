@@ -953,6 +953,490 @@ export const setRegistrationPaymentStatus = makeCallable(async (uid, data) => {
   });
 }, "setRegistrationPaymentStatus", "public");
 
+export const resubmitRegistration = makeCallable(async (uid, data) => {
+  const registrationId = requiredString(data, "registrationId", 150);
+  const teamName = optionalString(data, "teamName", 120) ?? "";
+  const projectTitle = optionalString(data, "projectTitle", 300);
+  if (!Array.isArray(data.members) || data.members.length === 0 || data.members.length > 400) {
+    return fail("invalid-argument", "members must contain between 1 and 400 students.");
+  }
+  const members = data.members.map((value) => {
+    const member = asData(value);
+    return {
+      name: requiredString(member, "name", 120),
+      grade: requiredString(member, "grade", 40),
+      section: optionalString(member, "section", 40),
+    };
+  });
+  const registrationRef = ref("registrations", registrationId);
+  const assignmentRef = ref("roleAssignments", `${uid}_SCHOOL_COORDINATOR`);
+
+  return db.runTransaction(async (transaction) => {
+    const [assignmentSnapshot, registrationSnapshot] = await Promise.all([
+      transaction.get(assignmentRef),
+      transaction.get(registrationRef),
+    ]);
+    if (!assignmentSnapshot.exists || assignmentSnapshot.data()!.uid !== uid ||
+        assignmentSnapshot.data()!.role !== "SCHOOL_COORDINATOR" ||
+        assignmentSnapshot.data()!.active !== true) {
+      return fail("permission-denied", "An active school coordinator assignment is required.");
+    }
+    if (!registrationSnapshot.exists) return fail("failed-precondition", "The registration does not exist.");
+    const registration = registrationSnapshot.data()!;
+    const schoolId = assignmentSnapshot.data()!.scopeId;
+    if (typeof schoolId !== "string" || schoolId === "unassigned" ||
+        registration.schoolId !== schoolId) {
+      return fail("permission-denied", "You can only correct registrations for your assigned school.");
+    }
+    if (registration.state !== "CORRECTION_REQUIRED") {
+      return fail("failed-precondition", "Only registrations requiring correction can be resubmitted.");
+    }
+    if (typeof registration.teamId !== "string" || typeof registration.seasonId !== "string") {
+      return fail("failed-precondition", "The registration is missing its team or season.");
+    }
+    const categoryCode = assertOneOf(registration.categoryCode, REGISTRATION_CATEGORIES, "categoryCode");
+    const teamRef = ref("teams", registration.teamId);
+    const studentsQuery = db.collection("students").where("teamId", "==", registration.teamId);
+    const categoryConfigRef = ref("config", "categories");
+    const [teamSnapshot, studentsSnapshot, categoryConfigSnapshot] = await Promise.all([
+      transaction.get(teamRef),
+      transaction.get(studentsQuery),
+      transaction.get(categoryConfigRef),
+    ]);
+    if (!teamSnapshot.exists || teamSnapshot.data()!.schoolId !== schoolId) {
+      return fail("failed-precondition", "The registration team is missing or belongs to another school.");
+    }
+    const settings = getCategoryRegistrationSettings(categoryConfigSnapshot.data(), categoryCode);
+    if (members.length < settings.minTeam || members.length > settings.maxTeam) {
+      return fail("invalid-argument", `The category requires between ${settings.minTeam} and ${settings.maxTeam} students.`);
+    }
+    const needsProject = ["ECO_CITY", "NEXTGEN_FACTORY", "INNOVATOR_JUNIOR", "INNOVATOR_SENIOR"].includes(categoryCode);
+    if (needsProject && !projectTitle) {
+      return fail("invalid-argument", "A project title is required for this category.");
+    }
+
+    const oldStudents = studentsSnapshot.docs
+      .slice()
+      .sort((left, right) => {
+        const leftOrder = left.data().order;
+        const rightOrder = right.data().order;
+        const a = Number.isSafeInteger(leftOrder) ? leftOrder as number : Number.MAX_SAFE_INTEGER;
+        const b = Number.isSafeInteger(rightOrder) ? rightOrder as number : Number.MAX_SAFE_INTEGER;
+        return a - b || left.id.localeCompare(right.id);
+      });
+    if (oldStudents.length > 497) {
+      return fail("failed-precondition", "This team has too many student records to safely update in one operation.");
+    }
+    const feeAmountPerHeadMinorUnits = Number.isSafeInteger(registration.feeAmountPerHeadMinorUnits) &&
+      (registration.feeAmountPerHeadMinorUnits as number) > 0
+      ? registration.feeAmountPerHeadMinorUnits as number
+      : settings.feeAmountMinorUnits;
+    const feeTotalMinorUnits = feeAmountPerHeadMinorUnits * members.length;
+    if (!Number.isSafeInteger(feeTotalMinorUnits) || feeTotalMinorUnits > 1_000_000_000) {
+      return fail("failed-precondition", "The calculated registration fee is invalid.");
+    }
+    const feeStatus = feeAmountPerHeadMinorUnits === 0
+      ? "NOT_REQUIRED"
+      : registration.feeStatus === "WAIVED"
+        ? "WAIVED"
+        : registration.feeStatus === "VERIFIED" && registration.feeTotalMinorUnits === feeTotalMinorUnits
+          ? "VERIFIED"
+          : "PENDING";
+
+    transaction.update(registrationRef, {
+      state: "SUBMITTED",
+      correctionNote: FieldValue.delete(),
+      correctionReason: FieldValue.delete(),
+      feeStatus,
+      feeAmountPerHeadMinorUnits,
+      feeTotalMinorUnits,
+      feePaidAt: feeStatus === "VERIFIED" ? registration.feePaidAt ?? null : null,
+      feePaidByUid: feeStatus === "VERIFIED" ? registration.feePaidByUid ?? null : null,
+      "eligibilitySnapshot.memberCount": members.length,
+      updatedAt: FieldValue.serverTimestamp(),
+      resubmittedAt: FieldValue.serverTimestamp(),
+    });
+    transaction.update(teamRef, {
+      teamName: teamName || registration.teamId,
+      ...(projectTitle ? { projectTitle } : { projectTitle: FieldValue.delete() }),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    members.forEach((member, index) => {
+      if (oldStudents[index]) {
+        transaction.update(oldStudents[index].ref, {
+          name: member.name,
+          grade: member.grade,
+          section: member.section ?? null,
+          order: index,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        const studentRef = db.collection("students").doc();
+        transaction.create(studentRef, {
+          id: studentRef.id,
+          schoolId,
+          teamId: registration.teamId,
+          name: member.name,
+          grade: member.grade,
+          section: member.section ?? null,
+          order: index,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+    });
+    oldStudents.slice(members.length).forEach((student) => transaction.delete(student.ref));
+    audit(transaction, uid, "REGISTRATION_CORRECTION_RESUBMITTED", "registration", registrationId, {
+      state: "CORRECTION_REQUIRED",
+      memberCount: oldStudents.length,
+      feeStatus: registration.feeStatus ?? null,
+    }, {
+      state: "SUBMITTED",
+      memberCount: members.length,
+      feeStatus,
+      feeTotalMinorUnits,
+    });
+    return { registrationId, teamId: registration.teamId, state: "SUBMITTED", feeStatus, feeTotalMinorUnits };
+  });
+}, "resubmitRegistration", "public");
+
+export const deleteRegisteredStudent = makeCallable(async (uid, data) => {
+  const studentId = requiredString(data, "studentId", 150);
+  const destinationTeamId = optionalString(data, "destinationTeamId", 150);
+  const studentRef = ref("students", studentId);
+  const initialStudent = await studentRef.get();
+  if (!initialStudent.exists) return fail("failed-precondition", "The student record does not exist.");
+  const initial = initialStudent.data()!;
+  if (typeof initial.teamId !== "string" || typeof initial.schoolId !== "string") {
+    return fail("failed-precondition", "Only students linked to a registered team and school can be deleted here.");
+  }
+
+  const teamRef = ref("teams", initial.teamId);
+  const schoolRef = ref("schools", initial.schoolId);
+  const superAdminAssignmentRef = ref("roleAssignments", `${uid}_SUPER_ADMIN`);
+  const districtAdminAssignmentRef = ref("roleAssignments", `${uid}_DISTRICT_ADMIN`);
+  const registrationQuery = db.collection("registrations").where("teamId", "==", initial.teamId);
+  const studentsQuery = db.collection("students").where("teamId", "==", initial.teamId);
+  const stageEntriesQuery = db.collection("stageEntries").where("teamId", "==", initial.teamId);
+  const teamMembershipsQuery = db.collection("teamMemberships").where("teamId", "==", initial.teamId);
+
+  return db.runTransaction(async (transaction) => {
+    const [
+      currentStudent,
+      teamSnapshot,
+      schoolSnapshot,
+      registrationSnapshot,
+      studentSnapshot,
+      stageEntrySnapshot,
+      teamMembershipSnapshot,
+      superAdminAssignment,
+      districtAdminAssignment,
+    ] = await Promise.all([
+        transaction.get(studentRef),
+        transaction.get(teamRef),
+        transaction.get(schoolRef),
+        transaction.get(registrationQuery),
+        transaction.get(studentsQuery),
+        transaction.get(stageEntriesQuery),
+        transaction.get(teamMembershipsQuery),
+        transaction.get(superAdminAssignmentRef),
+        transaction.get(districtAdminAssignmentRef),
+      ]);
+    if (!currentStudent.exists || !teamSnapshot.exists || !schoolSnapshot.exists) {
+      return fail("failed-precondition", "The student, team, or school no longer exists.");
+    }
+    const student = currentStudent.data()!;
+    const team = teamSnapshot.data()!;
+    const school = schoolSnapshot.data()!;
+    if (student.teamId !== initial.teamId || student.schoolId !== initial.schoolId ||
+        team.schoolId !== student.schoolId) {
+      return fail("failed-precondition", "The student’s school or team assignment changed. Refresh and retry.");
+    }
+    const matchingRegistrations = registrationSnapshot.docs.filter((registration) =>
+      registration.data().schoolId === student.schoolId &&
+      registration.data().teamId === student.teamId
+    );
+    if (matchingRegistrations.length !== 1) {
+      return fail("failed-precondition", "A single matching team registration is required before deleting this student.");
+    }
+    const registrationDocument = matchingRegistrations[0];
+    const registration = registrationDocument.data();
+    const superAdmin = superAdminAssignment.data();
+    const districtAdmin = districtAdminAssignment.data();
+    const isSuperAdmin = superAdminAssignment.exists &&
+      superAdmin?.uid === uid && superAdmin.role === "SUPER_ADMIN" && superAdmin.active === true;
+    const isScopedDistrictAdmin = districtAdminAssignment.exists &&
+      districtAdmin?.uid === uid && districtAdmin.role === "DISTRICT_ADMIN" &&
+      districtAdmin.active === true && typeof school.districtId === "string" &&
+      districtAdmin.scopeId === school.districtId;
+    if (!isSuperAdmin && !isScopedDistrictAdmin) {
+      return fail("permission-denied", "An active Super Admin or assigned District Admin role is required.");
+    }
+    if (!["DRAFT", "SUBMITTED", "UNDER_REVIEW", "CORRECTION_REQUIRED"].includes(String(registration.state))) {
+      return fail("failed-precondition", "Students cannot be removed after a team is approved or finalized.");
+    }
+    if (!stageEntrySnapshot.empty) {
+      return fail("failed-precondition", "Students cannot be removed after the team has been scheduled for an event.");
+    }
+    const memberCount = studentSnapshot.docs.length;
+    if (!studentSnapshot.docs.some((record) => record.id === studentId)) {
+      return fail("failed-precondition", "The student is no longer in this team roster.");
+    }
+    if (memberCount <= 1) {
+      return fail("failed-precondition", "A team must keep at least one student. Add another student before deleting this record.");
+    }
+
+    const categoryCode = assertOneOf(team.categoryCode, REGISTRATION_CATEGORIES, "categoryCode");
+    const categoryConfigSnapshot = await transaction.get(ref("config", "categories"));
+    const settings = getCategoryRegistrationSettings(categoryConfigSnapshot.data(), categoryCode);
+    const remainingMembers = studentSnapshot.docs.filter((record) => record.id !== studentId);
+    const requiresTransfer = remainingMembers.length < settings.minTeam;
+    if (requiresTransfer !== Boolean(destinationTeamId)) {
+      return fail(
+        "failed-precondition",
+        requiresTransfer
+          ? `Deleting this student would leave the team below the minimum of ${settings.minTeam}. Select another registered team for the remaining members.`
+          : "A destination team was provided, but the original team still meets its minimum size.",
+      );
+    }
+
+    let destinationRegistration: FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData> | undefined;
+    let destinationStudents: QuerySnapshot<DocumentData> | undefined;
+    let destinationMemberships: QuerySnapshot<DocumentData> | undefined;
+    let destinationTeam: DocumentData | undefined;
+    if (destinationTeamId) {
+      if (destinationTeamId === student.teamId) {
+        return fail("invalid-argument", "Choose a different destination team.");
+      }
+      const destinationTeamRef = ref("teams", destinationTeamId);
+      const destinationRegistrationQuery = db.collection("registrations").where("teamId", "==", destinationTeamId);
+      const destinationStudentsQuery = db.collection("students").where("teamId", "==", destinationTeamId);
+      const destinationStageEntriesQuery = db.collection("stageEntries").where("teamId", "==", destinationTeamId);
+      const destinationMembershipsQuery = db.collection("teamMemberships").where("teamId", "==", destinationTeamId);
+      const sourceInvoiceQuery = db.collection("invoices").where("registrationId", "==", registrationDocument.id);
+      const destinationRegistrationSnapshot = await transaction.get(destinationRegistrationQuery);
+      const [
+        destinationTeamSnapshot,
+        destinationStudentSnapshot,
+        destinationStageEntries,
+        destinationMembershipSnapshot,
+        sourceInvoices,
+      ] = await Promise.all([
+        transaction.get(destinationTeamRef),
+        transaction.get(destinationStudentsQuery),
+        transaction.get(destinationStageEntriesQuery),
+        transaction.get(destinationMembershipsQuery),
+        transaction.get(sourceInvoiceQuery),
+      ]);
+      if (!destinationTeamSnapshot.exists || !destinationStageEntries.empty) {
+        return fail("failed-precondition", "The destination team is unavailable or has already been scheduled.");
+      }
+      if (destinationRegistrationSnapshot.size !== 1) {
+        return fail("failed-precondition", "The destination must have exactly one registered team record.");
+      }
+      destinationRegistration = destinationRegistrationSnapshot.docs[0];
+      const destinationRegistrationData = destinationRegistration.data();
+      destinationTeam = destinationTeamSnapshot.data()!;
+      destinationStudents = destinationStudentSnapshot;
+      destinationMemberships = destinationMembershipSnapshot;
+      const destinationInvoices = await transaction.get(
+        db.collection("invoices").where("registrationId", "==", destinationRegistration.id),
+      );
+      if (!sourceInvoices.empty || !destinationInvoices.empty) {
+        return fail("failed-precondition", "Resolve or cancel invoices before moving students between teams.");
+      }
+      if (!["DRAFT", "SUBMITTED", "UNDER_REVIEW", "CORRECTION_REQUIRED", "APPROVED"].includes(
+        String(destinationRegistrationData.state),
+      )) {
+        return fail("failed-precondition", "The destination registration is not in a state that allows roster changes.");
+      }
+      if (destinationTeam.schoolId !== student.schoolId ||
+          destinationTeam.categoryCode !== categoryCode ||
+          registration.categoryCode !== categoryCode ||
+          typeof registration.seasonId !== "string" ||
+          (typeof team.seasonId === "string" && team.seasonId !== registration.seasonId) ||
+          (typeof destinationTeam.seasonId === "string" && destinationTeam.seasonId !== registration.seasonId) ||
+          destinationRegistrationData.schoolId !== student.schoolId ||
+          destinationRegistrationData.categoryCode !== categoryCode ||
+          destinationRegistrationData.seasonId !== registration.seasonId) {
+        return fail("failed-precondition", "The destination team must be in the same school, season, and category.");
+      }
+      if (destinationStudents.docs.some((record) =>
+        record.data().schoolId !== student.schoolId || record.data().teamId !== destinationTeamId
+      )) {
+        return fail("failed-precondition", "The destination team roster contains inconsistent student assignments.");
+      }
+      const destinationMembershipStudentIds = new Set(
+        destinationMemberships.docs
+          .filter((record) => record.data().status !== "INACTIVE")
+          .map((record) => record.data().studentId)
+          .filter((value): value is string => typeof value === "string"),
+      );
+      if (remainingMembers.some((record) => destinationMembershipStudentIds.has(record.id))) {
+        return fail("failed-precondition", "A remaining student already has an active membership in the destination team.");
+      }
+      if (teamMembershipSnapshot.docs.some((record) => {
+        const membership = record.data();
+        return membership.status !== "INACTIVE" &&
+          (typeof membership.studentId !== "string" ||
+            !studentSnapshot.docs.some((studentRecord) => studentRecord.id === membership.studentId));
+      })) {
+        return fail("failed-precondition", "The source team has an active membership that does not match its student roster.");
+      }
+      const activeSourceMemberships = teamMembershipSnapshot.docs.filter((record) =>
+        record.data().status !== "INACTIVE",
+      );
+      if (remainingMembers.length + activeSourceMemberships.length + 5 > 500) {
+        return fail("failed-precondition", "This team has too many linked records to move in one safe transaction.");
+      }
+      if (["VERIFIED", "PARTIAL", "WAIVED"].includes(String(registration.feeStatus))) {
+        return fail("failed-precondition", "Resolve the source team's paid, partially paid, or waived fees before moving its students.");
+      }
+      if (destinationRegistrationData.feeStatus === "PARTIAL") {
+        return fail("failed-precondition", "Resolve the destination team's partial payment before moving students into it.");
+      }
+      const combinedMemberCount = destinationStudents.size + remainingMembers.length;
+      if (combinedMemberCount < settings.minTeam || combinedMemberCount > settings.maxTeam) {
+        return fail(
+          "failed-precondition",
+          `The destination team must contain between ${settings.minTeam} and ${settings.maxTeam} students after the move.`,
+        );
+      }
+    }
+
+    const feeAmountPerHeadMinorUnits =
+      Number.isSafeInteger(registration.feeAmountPerHeadMinorUnits) &&
+      (registration.feeAmountPerHeadMinorUnits as number) >= 0
+        ? registration.feeAmountPerHeadMinorUnits as number
+        : settings.feeAmountMinorUnits;
+    const feeTotalMinorUnits = feeAmountPerHeadMinorUnits * (memberCount - 1);
+    if (!Number.isSafeInteger(feeTotalMinorUnits) || feeTotalMinorUnits > 1_000_000_000) {
+      return fail("failed-precondition", "The updated per-student registration fee is invalid.");
+    }
+    const feeStatus = feeAmountPerHeadMinorUnits === 0
+      ? "NOT_REQUIRED"
+      : registration.feeStatus === "WAIVED"
+        ? "WAIVED"
+        : registration.feeStatus === "VERIFIED" &&
+            typeof registration.feeTotalMinorUnits === "number" &&
+            feeTotalMinorUnits <= registration.feeTotalMinorUnits
+          ? "VERIFIED"
+          : "PENDING";
+
+    transaction.delete(studentRef);
+    teamMembershipSnapshot.docs
+      .filter((record) =>
+        record.data().status !== "INACTIVE" &&
+        record.data().studentId === studentId,
+      )
+      .forEach((record) => transaction.delete(record.ref));
+    if (destinationRegistration && destinationStudents && destinationTeam && destinationTeamId) {
+      const destinationRegistrationData = destinationRegistration.data();
+      const destinationMemberCount = destinationStudents.size + remainingMembers.length;
+      const destinationFeeAmountPerHeadMinorUnits =
+        Number.isSafeInteger(destinationRegistrationData.feeAmountPerHeadMinorUnits) &&
+        (destinationRegistrationData.feeAmountPerHeadMinorUnits as number) >= 0
+          ? destinationRegistrationData.feeAmountPerHeadMinorUnits as number
+          : settings.feeAmountMinorUnits;
+      const destinationFeeTotalMinorUnits =
+        destinationFeeAmountPerHeadMinorUnits * destinationMemberCount;
+      if (!Number.isSafeInteger(destinationFeeTotalMinorUnits) || destinationFeeTotalMinorUnits > 1_000_000_000) {
+        return fail("failed-precondition", "The destination registration fee total is invalid.");
+      }
+      const previousDestinationFeeTotal = destinationRegistrationData.feeTotalMinorUnits;
+      const destinationFeeStatus = destinationFeeAmountPerHeadMinorUnits === 0
+        ? "NOT_REQUIRED"
+        : destinationRegistrationData.feeStatus === "WAIVED"
+          ? "WAIVED"
+          : destinationRegistrationData.feeStatus === "VERIFIED" &&
+              typeof previousDestinationFeeTotal === "number" &&
+              Number.isSafeInteger(previousDestinationFeeTotal) &&
+              previousDestinationFeeTotal >= 0
+            ? destinationFeeTotalMinorUnits <= previousDestinationFeeTotal ? "VERIFIED" : "PARTIAL"
+            : "PENDING";
+      remainingMembers.forEach((record) => transaction.update(record.ref, {
+        teamId: destinationTeamId,
+        updatedAt: FieldValue.serverTimestamp(),
+      }));
+      teamMembershipSnapshot.docs
+        .filter((record) =>
+          record.data().status !== "INACTIVE" &&
+          record.data().studentId !== studentId,
+        )
+        .forEach((record) => transaction.update(record.ref, {
+          teamId: destinationTeamId,
+          updatedAt: FieldValue.serverTimestamp(),
+        }));
+      transaction.update(registrationDocument.ref, {
+        state: "WITHDRAWN",
+        "eligibilitySnapshot.memberCount": 0,
+        feeTotalMinorUnits: 0,
+        feeStatus: feeAmountPerHeadMinorUnits === 0 ? "NOT_REQUIRED" : "PENDING",
+        feePaidAt: null,
+        feePaidByUid: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.update(destinationRegistration.ref, {
+        "eligibilitySnapshot.memberCount": destinationMemberCount,
+        feeAmountPerHeadMinorUnits: destinationFeeAmountPerHeadMinorUnits,
+        feeTotalMinorUnits: destinationFeeTotalMinorUnits,
+        feeStatus: destinationFeeStatus,
+        feePaidAt: ["VERIFIED", "PARTIAL"].includes(destinationFeeStatus)
+          ? destinationRegistrationData.feePaidAt ?? null
+          : null,
+        feePaidByUid: ["VERIFIED", "PARTIAL"].includes(destinationFeeStatus)
+          ? destinationRegistrationData.feePaidByUid ?? null
+          : null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      audit(transaction, uid, "TEAM_ROSTER_MOVED", "registration", destinationRegistration.id, {
+        teamId: student.teamId,
+        memberCount: destinationStudents.size,
+      }, {
+        teamId: destinationTeamId,
+        memberCount: destinationMemberCount,
+        movedStudentIds: remainingMembers.map((record) => record.id),
+        sourceRegistrationId: registrationDocument.id,
+      });
+    } else {
+      transaction.update(registrationDocument.ref, {
+        "eligibilitySnapshot.memberCount": memberCount - 1,
+        feeAmountPerHeadMinorUnits,
+        feeTotalMinorUnits,
+        feeStatus,
+        feePaidAt: feeStatus === "VERIFIED" ? registration.feePaidAt ?? null : null,
+        feePaidByUid: feeStatus === "VERIFIED" ? registration.feePaidByUid ?? null : null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    audit(transaction, uid, "REGISTERED_STUDENT_DELETED", "student", studentId, {
+      teamId: student.teamId,
+      schoolId: student.schoolId,
+      memberCount,
+    }, {
+      teamId: student.teamId,
+      schoolId: student.schoolId,
+      memberCount: memberCount - 1,
+      registrationId: registrationDocument.id,
+      ...(destinationTeamId ? { destinationTeamId, movedMemberCount: remainingMembers.length } : {
+        feeStatus,
+        feeTotalMinorUnits,
+      }),
+    });
+    return {
+      studentId,
+      teamId: student.teamId,
+      registrationId: registrationDocument.id,
+      memberCount: destinationRegistration && destinationStudents
+        ? destinationStudents.size + remainingMembers.length
+        : memberCount - 1,
+      feeStatus: destinationRegistration ? "MOVED" : feeStatus,
+      feeTotalMinorUnits: destinationRegistration ? 0 : feeTotalMinorUnits,
+      ...(destinationTeamId ? { destinationTeamId, movedMemberCount: remainingMembers.length } : {}),
+    };
+  });
+}, "deleteRegisteredStudent", "public");
+
 export const reviewRegistration = makeCallable(async (uid, data) => {
   const registrationId = requiredString(data, "registrationId", 150);
   const requestedDecision = data.decision;

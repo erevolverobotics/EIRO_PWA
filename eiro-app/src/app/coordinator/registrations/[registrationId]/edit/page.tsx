@@ -4,13 +4,12 @@ import { Suspense, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { PageHeader, Card, Button, CategoryBadge, Modal } from '@/components/ui';
 import { Plus, Trash2, ChevronRight, AlertCircle, CheckCircle2, Loader2, ArrowLeft } from 'lucide-react';
-import type { CategoryCode, Season } from '@/lib/types';
-import { CATEGORY_LABELS } from '@/lib/types';
+import type { CategoryCode } from '@/lib/types';
 import toast from 'react-hot-toast';
-import { getOne, queryByField, db, doc, updateDoc, getDocs, collection, query, where, serverTimestamp } from '@/lib/firebase/firestore';
-import { writeBatch } from 'firebase/firestore';
+import { getOne, queryByField } from '@/lib/firebase/firestore';
 import { useAuth } from '@/lib/firebase/auth-context';
 import { FirebaseError } from 'firebase/app';
+import { callEiroFunction } from '@/lib/firebase/functions';
 
 const CATEGORIES: CategoryCode[] = ['SUMO', 'MAZE', 'WALL', 'ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'];
 
@@ -22,7 +21,7 @@ type CategoryConfiguration = Partial<Record<CategoryCode, CategorySettings>>;
 function EditRegistrationContent() {
   const { registrationId } = useParams<{ registrationId: string }>();
   const router = useRouter();
-  const { user, roles } = useAuth();
+  const { user, roles, loading: authLoading } = useAuth();
   const schoolId = roles.find(r => r.role === 'SCHOOL_COORDINATOR' && r.active)?.scopeId;
 
   // Pre-filled state
@@ -32,7 +31,6 @@ function EditRegistrationContent() {
   const [teamName, setTeamName]         = useState('');
   const [projectTitle, setProjectTitle] = useState('');
   const [category, setCategory]         = useState<CategoryCode | ''>('');
-  const [seasonId, setSeasonId]         = useState('');
   const [members, setMembers]           = useState<Member[]>([]);
   const [categoryConfiguration, setCategoryConfiguration] = useState<CategoryConfiguration | null>(null);
   const [errors, setErrors]             = useState<Record<string, string>>({});
@@ -43,21 +41,32 @@ function EditRegistrationContent() {
   // ── Load existing registration data ─────────────────────────────────────────
 
   useEffect(() => {
-    if (!registrationId || !schoolId || schoolId === 'unassigned') {
-      if (!schoolId || schoolId === 'unassigned') {
-        setLoadError('Your coordinator account is not linked to a school.');
-      }
+    if (authLoading) return;
+    if (!registrationId) {
+      setLoadError('Registration ID is missing.');
+      setLoadingData(false);
+      return;
+    }
+    if (!user) {
+      setLoadError('Sign in to view this registration.');
+      setLoadingData(false);
+      return;
+    }
+    if (!schoolId || schoolId === 'unassigned') {
+      setLoadError('Your coordinator account is not linked to a school.');
       setLoadingData(false);
       return;
     }
     let active = true;
+    setLoadError('');
+    setLoadingData(true);
 
     async function load() {
       try {
         // Mirror exactly what the working registrations list page does:
         // queryByField('registrations', 'schoolId', schoolId) — this works for coordinators
         const [allRegistrations, allTeams, allStudents, catConfig] = await Promise.all([
-          queryByField<{ teamId: string; schoolId: string; seasonId: string; categoryCode: string; state: string; correctionNote?: string; projectTitle?: string }>(
+          queryByField<{ teamId: string; schoolId: string; seasonId: string; categoryCode: string; state: string; correctionNote?: string; correctionReason?: string; projectTitle?: string }>(
             'registrations', 'schoolId', schoolId
           ),
           queryByField<{ teamName?: string; projectTitle?: string; displayTeamCode?: string; schoolId?: string }>(
@@ -88,13 +97,12 @@ function EditRegistrationContent() {
         }));
 
         if (!active) return;
-        setSeasonId(reg.seasonId ?? '');
         setCategory((reg.categoryCode ?? '') as CategoryCode);
         setTeamName(((team as any).teamName ?? '') as string);
         setProjectTitle(((team as any).projectTitle ?? reg.projectTitle ?? '') as string);
         setMembers(loadedMembers.length > 0 ? loadedMembers : [{ id: '1', name: '', grade: '', section: '' }]);
         setCategoryConfiguration(catConfig);
-        setCorrectionNote(reg.correctionNote ?? '');
+        setCorrectionNote(reg.correctionNote ?? reg.correctionReason ?? '');
       } catch (e) {
         console.error(e);
         if (active) setLoadError(e instanceof Error ? e.message : 'Failed to load registration.');
@@ -105,7 +113,7 @@ function EditRegistrationContent() {
 
     void load();
     return () => { active = false; };
-  }, [registrationId, schoolId]);
+  }, [authLoading, registrationId, schoolId, user]);
 
   const categorySettings = category ? categoryConfiguration?.[category] : undefined;
   const needsProject = ['ECO_CITY', 'NEXTGEN_FACTORY', 'INNOVATOR_JUNIOR', 'INNOVATOR_SENIOR'].includes(category);
@@ -150,57 +158,24 @@ function EditRegistrationContent() {
     if (!user) { toast.error('You must be signed in.'); return; }
     setSaving(true);
     try {
-      const batch = writeBatch(db);
-
-      // 1. Update the registration: flip state back to SUBMITTED, clear correction note
-      const regRef = doc(db, 'registrations', registrationId);
-      batch.update(regRef, {
-        state: 'SUBMITTED',
-        correctionNote: '',
-        // Reset stored total so payment page recalculates from fresh student count.
-        // feeStatus (PENDING/VERIFIED/WAIVED) is intentionally preserved.
-        feeTotalMinorUnits: 0,
-        'eligibilitySnapshot.memberCount': members.length,
-        updatedAt: serverTimestamp(),
+      await callEiroFunction<
+        {
+          registrationId: string;
+          teamName: string;
+          projectTitle: string;
+          members: Array<{ name: string; grade: string; section: string }>;
+        },
+        { registrationId: string; state: string }
+      >('resubmitRegistration', {
+        registrationId,
+        teamName: teamName.trim(),
+        projectTitle: projectTitle.trim(),
+        members: members.map(({ name, grade, section }) => ({
+          name: name.trim(),
+          grade: grade.trim(),
+          section: section.trim(),
+        })),
       });
-
-      // 2. Update the team: name + project title
-      // Find teamId from the loaded registrations (stored in the reg we loaded)
-      if (seasonId) {
-        // Get the teamId for this registration
-        const allRegs = await queryByField<{ teamId: string }>("registrations", "schoolId", schoolId ?? "");
-        const thisReg = allRegs.find(r => r.id === registrationId);
-        if (thisReg?.teamId) {
-          const teamRef = doc(db, 'teams', thisReg.teamId);
-          batch.update(teamRef, {
-            teamName: teamName.trim() || thisReg.teamId,
-            ...(projectTitle.trim() ? { projectTitle: projectTitle.trim() } : {}),
-            updatedAt: serverTimestamp(),
-          });
-
-          // 3. Delete old student docs for this team and write fresh ones
-          const oldStudents = await getDocs(
-            query(collection(db, 'students'), where('teamId', '==', thisReg.teamId))
-          );
-          oldStudents.docs.forEach(d => batch.delete(d.ref));
-
-          members.forEach((m, i) => {
-            const studentRef = doc(collection(db, 'students'));
-            batch.set(studentRef, {
-              teamId: thisReg.teamId,
-              schoolId: schoolId ?? '',
-              name: m.name.trim(),
-              grade: m.grade,
-              section: m.section.trim() || null,
-              order: i,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          });
-        }
-      }
-
-      await batch.commit();
       toast.success('Correction submitted for admin review! ✅');
       setSubmitted(true);
     } catch (error) {

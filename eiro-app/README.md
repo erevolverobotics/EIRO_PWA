@@ -121,6 +121,17 @@ New team IDs use a category prefix and a four-digit sequence, for example `SU000
 for SUMO or `IJ0001` for INNOVATOR_JUNIOR. Sequences increment independently per
 category and are shared by manual and CSV registrations.
 
+Admins can browse registered students by school, class, and category. Student
+details can be corrected; removing a student updates the roster count and fee,
+and is blocked if it would alter an approved or scheduled team. If deleting a
+student would leave the team below its category minimum, the admin must select
+another registered team in the same school, season, and category with enough
+capacity. The delete and move are committed together; the original registration
+is retained as withdrawn. An approved team may be a destination if it has no
+event entry or invoice; its roster and fee are updated, and an increased fee
+becomes partially paid for reconciliation. Transfers are blocked when the source
+team has paid/waived fees or the destination has an unresolved partial payment.
+
 ---
 
 ## 🔥 Firebase Setup
