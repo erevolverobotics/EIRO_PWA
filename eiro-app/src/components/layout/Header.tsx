@@ -8,7 +8,7 @@ import toast from 'react-hot-toast';
 import { db } from '@/lib/firebase/firestore';
 import { callEiroFunction } from '@/lib/firebase/functions';
 import type { Notification } from '@/lib/types';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 
 interface HeaderProps {
   title: string;
@@ -47,13 +47,20 @@ export function Header({ title, onMenuClick }: HeaderProps) {
     setNotificationsLoading(true);
     const q = query(
       collection(db, 'notifications'),
-      where('recipientUid', '==', user.uid),
-      orderBy('createdAt', 'desc')
+      where('recipientUid', '==', user.uid)
     );
     const unsub = onSnapshot(
       q,
       snap => {
-        const items = snap.docs.map(d => ({ id: d.id, ...d.data() } as Notification));
+        const items = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as Notification))
+          .sort((a, b) => {
+            const toMs = (v: unknown) =>
+              v && typeof v === 'object' && 'toMillis' in v
+                ? (v as { toMillis: () => number }).toMillis()
+                : 0;
+            return toMs(b.createdAt) - toMs(a.createdAt);
+          });
         setNotifications(items);
         setNotificationsLoading(false);
         setNotificationsError('');
