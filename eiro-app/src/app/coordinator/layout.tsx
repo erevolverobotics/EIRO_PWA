@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
-  LayoutDashboard, School, Users, Plus, Upload, ClipboardList,
+  LayoutDashboard, School, Plus, Upload, ClipboardList,
   QrCode, Calendar, Trophy, Award, Shuffle, CreditCard, BookOpen
 } from 'lucide-react';
 import { usePathname } from 'next/navigation';
@@ -30,9 +30,13 @@ function getTitle(pathname: string): string {
   return found ? found.label : 'School Coordinator';
 }
 
+function CoordinatorHeader({ onMenuClick }: { onMenuClick: () => void }) {
+  const pathname = usePathname();
+  return <Header title={getTitle(pathname)} onMenuClick={onMenuClick} />;
+}
+
 export default function CoordinatorLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const pathname = usePathname();
 
   return (
     <RouteGuard allowedRoles={['SCHOOL_COORDINATOR', 'DISTRICT_ADMIN', 'SUPER_ADMIN']}>
@@ -45,7 +49,9 @@ export default function CoordinatorLayout({ children }: { children: React.ReactN
           onClose={() => setSidebarOpen(false)}
         />
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
+          <Suspense fallback={<Header title="School Coordinator" onMenuClick={() => setSidebarOpen(true)} />}>
+            <CoordinatorHeader onMenuClick={() => setSidebarOpen(true)} />
+          </Suspense>
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             {children}
           </main>

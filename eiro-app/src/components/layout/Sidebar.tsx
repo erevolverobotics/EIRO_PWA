@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -31,7 +31,7 @@ interface SidebarProps {
   onClose: () => void;
 }
 
-function NavLink({
+function NavLinkContent({
   item,
   depth = 0,
   onClose,
@@ -116,6 +116,19 @@ function NavLink({
         </ul>
       )}
     </li>
+  );
+}
+
+function NavLink(props: {
+  item: NavItem;
+  depth?: number;
+  onClose: () => void;
+  collapsed?: boolean;
+}) {
+  return (
+    <Suspense fallback={<li aria-hidden="true" className="h-10" />}>
+      <NavLinkContent {...props} />
+    </Suspense>
   );
 }
 
