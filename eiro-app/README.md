@@ -159,6 +159,22 @@ Select the intended Firebase project with the Firebase CLI before deployment. Th
 does not use demo data when Firebase is unconfigured; Firestore screens report a
 configuration or access error instead.
 
+The `deleteRegisteredStudent` callable is private and is invoked through the
+Next.js `/api/admin/delete-registered-student` route. Configure these server-only
+Vercel environment variables (never use a `NEXT_PUBLIC_` prefix):
+
+- `PRIVATE_FUNCTION_INVOKER_PROJECT_ID`
+- `PRIVATE_FUNCTION_INVOKER_CLIENT_EMAIL`
+- `PRIVATE_FUNCTION_INVOKER_PRIVATE_KEY`
+- `DELETE_REGISTERED_STUDENT_RUN_URL` (the service's `https://*.run.app` URL)
+
+Use a dedicated Google service account for the proxy. Grant it `roles/run.invoker`
+on only the `deleteregisteredstudent` Cloud Run service, and
+`roles/iam.serviceAccountOpenIdTokenCreator` on its own service account. Store its
+private key only in Vercel's encrypted environment settings. Do not grant `allUsers`
+or make the function public. The proxy verifies the Firebase ID token; the callable
+also verifies the token and enforces the admin role before changing Firestore.
+
 ### Required Firestore Collections
 - `seasons` · `events` · `schoolApplications` · `schools` · `teams` · `students`
 - `stageEntries` · `payments` · `trainingAttendance`

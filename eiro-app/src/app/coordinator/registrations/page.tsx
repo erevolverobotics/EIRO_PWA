@@ -124,11 +124,7 @@ export default function RegistrationsPage() {
     ])
       .then(([registrationData, teamData, students]) => {
         if (!active) return;
-<<<<<<< HEAD
-        const registeredTeamIds = new Set(registrationData.map(r => r.teamId));
-        setExpandedTeams(new Set(registeredTeamIds));
-=======
->>>>>>> 84158c77df948771f264ca5f2b52171c3fed3d18
+        setExpandedTeams(new Set(registrationData.map(registration => registration.teamId)));
 
         const registeredTeamIds = new Set(
           registrationData.map(r => r.teamId)

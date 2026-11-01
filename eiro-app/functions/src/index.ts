@@ -1435,7 +1435,7 @@ export const deleteRegisteredStudent = makeCallable(async (uid, data) => {
       ...(destinationTeamId ? { destinationTeamId, movedMemberCount: remainingMembers.length } : {}),
     };
   });
-}, "deleteRegisteredStudent", "public");
+}, "deleteRegisteredStudent", "private");
 
 export const reviewRegistration = makeCallable(async (uid, data) => {
   const registrationId = requiredString(data, "registrationId", 150);

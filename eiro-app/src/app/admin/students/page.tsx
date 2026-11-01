@@ -7,7 +7,7 @@ import { Button, Card, CategoryBadge, Input, Modal, PageHeader } from '@/compone
 import { db } from '@/lib/firebase/config';
 import type { CategoryCode } from '@/lib/types';
 import { useAuth } from '@/lib/firebase/auth-context';
-import { callEiroFunction } from '@/lib/firebase/functions';
+import { deleteRegisteredStudent as callDeleteRegisteredStudent } from '@/lib/firebase/functions';
 import toast from 'react-hot-toast';
 
 interface SchoolRow {
@@ -284,10 +284,10 @@ export default function AdminStudentsPage() {
     }
     setSaving(true);
     try {
-      await callEiroFunction<
+      await callDeleteRegisteredStudent<
         { studentId: string; destinationTeamId?: string },
         { studentId: string; memberCount: number; feeStatus: string; feeTotalMinorUnits: number; movedMemberCount?: number }
-      >('deleteRegisteredStudent', {
+      >({
         studentId: deletingStudent.id,
         ...(wouldViolateTeamSize(deletingStudent) ? { destinationTeamId } : {}),
       });
