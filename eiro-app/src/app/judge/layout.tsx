@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
@@ -24,16 +24,19 @@ const HEAD_JUDGE_EXTRA: NavItem = {
 };
 
 function getTitle(pathname: string, items: NavItem[]): string {
-  const found = items.find(n => n.href === pathname);
+  const found = items.find(n => n.href === pathname || pathname.startsWith(n.href + '/'));
   return found ? found.label : 'Judge Panel';
+}
+
+function JudgeHeader({ navItems, onMenuClick }: { navItems: NavItem[]; onMenuClick: () => void }) {
+  const pathname = usePathname();
+  return <Header title={getTitle(pathname, navItems)} onMenuClick={onMenuClick} />;
 }
 
 export default function JudgeLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const pathname = usePathname();
   const { primaryRole } = useAuth();
 
-  // HEAD_JUDGE gets extra verification nav item
   const navItems: NavItem[] = primaryRole === 'HEAD_JUDGE'
     ? [...JUDGE_NAV, HEAD_JUDGE_EXTRA]
     : JUDGE_NAV;
@@ -49,7 +52,9 @@ export default function JudgeLayout({ children }: { children: React.ReactNode })
           onClose={() => setSidebarOpen(false)}
         />
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Header title={getTitle(pathname, navItems)} onMenuClick={() => setSidebarOpen(true)} />
+          <Suspense fallback={<Header title="Judge Panel" onMenuClick={() => setSidebarOpen(true)} />}>
+            <JudgeHeader navItems={navItems} onMenuClick={() => setSidebarOpen(true)} />
+          </Suspense>
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             {children}
           </main>

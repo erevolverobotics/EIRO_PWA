@@ -167,6 +167,8 @@ export interface Notification {
   recipientUid: string;
   channel?: string;
   templateId?: string;
+  title?: string;
+  body?: string;
   state?: string;
   read: boolean;
   sentAt?: unknown;

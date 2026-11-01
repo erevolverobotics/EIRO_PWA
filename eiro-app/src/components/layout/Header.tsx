@@ -5,9 +5,10 @@ import { Menu, Bell, Search, LogOut, User, Settings, ChevronDown } from 'lucide-
 import { useAuth } from '@/lib/firebase/auth-context';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
-import { queryByField } from '@/lib/firebase/firestore';
+import { db } from '@/lib/firebase/firestore';
 import { callEiroFunction } from '@/lib/firebase/functions';
 import type { Notification } from '@/lib/types';
+import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
 
 interface HeaderProps {
   title: string;
@@ -35,39 +36,35 @@ export function Header({ title, onMenuClick }: HeaderProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Live real-time listener for notifications
   useEffect(() => {
     if (!user) {
-      let active = true;
-      Promise.resolve().then(() => {
-        if (active) {
-          setNotifications([]);
-          setNotificationsError('');
-          setNotificationsLoading(false);
-        }
-      });
-      return () => { active = false; };
+      setNotifications([]);
+      setNotificationsError('');
+      setNotificationsLoading(false);
+      return;
     }
-    let active = true;
-    queryByField<Notification>('notifications', 'recipientUid', user.uid)
-      .then(items => {
-        if (active) {
-          setNotifications(items.sort((a, b) => {
-            const aDate = a.createdAt && typeof a.createdAt === 'object' && 'toMillis' in a.createdAt
-              ? Number((a.createdAt as { toMillis: () => number }).toMillis()) : 0;
-            const bDate = b.createdAt && typeof b.createdAt === 'object' && 'toMillis' in b.createdAt
-              ? Number((b.createdAt as { toMillis: () => number }).toMillis()) : 0;
-            return bDate - aDate;
-          }));
-        }
-      })
-      .catch(error => {
-        console.error('Failed to load notifications', error);
-        if (active) setNotificationsError('Notifications could not be loaded.');
-      })
-      .finally(() => {
-        if (active) setNotificationsLoading(false);
-      });
-    return () => { active = false; };
+    setNotificationsLoading(true);
+    const q = query(
+      collection(db, 'notifications'),
+      where('recipientUid', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(
+      q,
+      snap => {
+        const items = snap.docs.map(d => ({ id: d.id, ...d.data() } as Notification));
+        setNotifications(items);
+        setNotificationsLoading(false);
+        setNotificationsError('');
+      },
+      err => {
+        console.error('Notifications listener error', err);
+        setNotificationsError('Could not load notifications.');
+        setNotificationsLoading(false);
+      }
+    );
+    return unsub;
   }, [user]);
 
   useEffect(() => {
@@ -83,6 +80,47 @@ export function Header({ title, onMenuClick }: HeaderProps) {
       toast.error('Failed to sign out');
     }
   };
+
+  // ── Notification helpers ──────────────────────────────────────────────────
+  const TEMPLATE_LABELS: Record<string, { title: string; icon: string }> = {
+    registration_approved:        { title: 'Registration Approved ✅',       icon: '🎉' },
+    registration_rejected:        { title: 'Registration Rejected',           icon: '❌' },
+    correction_required:          { title: 'Correction Required',             icon: '✏️' },
+    correction_resubmitted:       { title: 'Correction Resubmitted',          icon: '📋' },
+    payment_verified:             { title: 'Payment Verified',                icon: '💰' },
+    schedule_changed:             { title: 'Event Schedule Changed',          icon: '📅' },
+    team_qualified:               { title: 'Team Qualified!',                 icon: '🏆' },
+    results_published:            { title: 'Results Published',               icon: '📢' },
+    merge_approved:               { title: 'Merge Request Approved',          icon: '🔀' },
+    merge_rejected:               { title: 'Merge Request Rejected',          icon: '🔀' },
+    adjustment_approved:          { title: 'Adjustment Approved',             icon: '✅' },
+    adjustment_rejected:          { title: 'Adjustment Rejected',             icon: '❌' },
+  };
+
+  function getNotifTitle(n: Notification): string {
+    if (n.title) return n.title;
+    const tpl = n.templateId ? TEMPLATE_LABELS[n.templateId] : undefined;
+    if (tpl) return `${tpl.icon} ${tpl.title}`;
+    return n.templateId ? n.templateId.replace(/_/g, ' ') : 'Notification';
+  }
+
+  function getNotifBody(n: Notification): string {
+    if (n.body) return n.body;
+    if (n.state === 'SENT') return 'Delivered';
+    if (n.state === 'FAILED') return 'Delivery failed';
+    return n.state ?? '';
+  }
+
+  function formatNotifTime(n: Notification): string {
+    const ts = n.sentAt ?? n.createdAt;
+    if (!ts || typeof ts !== 'object' || !('toMillis' in ts)) return '';
+    const ms = (ts as { toMillis: () => number }).toMillis();
+    const diff = Date.now() - ms;
+    if (diff < 60_000) return 'just now';
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    return `${Math.floor(diff / 86_400_000)}d ago`;
+  }
 
   const markNotificationRead = async (notificationId: string) => {
     try {
@@ -152,8 +190,20 @@ export function Header({ title, onMenuClick }: HeaderProps) {
                 <button key={notification.id} type="button" disabled={notification.read}
                   onClick={() => void markNotificationRead(notification.id)}
                   className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${!notification.read ? 'bg-indigo-600/5' : ''}`}>
-                  <p className="text-xs text-gray-300">{notification.templateId || notification.channel || 'Notification'}</p>
-                  <p className="text-[10px] text-gray-600 mt-1">{notification.state || 'Sent'}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className={`text-xs font-medium leading-snug ${notification.read ? 'text-gray-400' : 'text-white'}`}>
+                      {getNotifTitle(notification)}
+                    </p>
+                    <span className="text-[10px] text-gray-600 whitespace-nowrap shrink-0 mt-0.5">
+                      {formatNotifTime(notification)}
+                    </span>
+                  </div>
+                  {getNotifBody(notification) && (
+                    <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">{getNotifBody(notification)}</p>
+                  )}
+                  {!notification.read && (
+                    <span className="inline-block mt-1 text-[9px] text-indigo-400 font-semibold uppercase tracking-wide">Tap to mark read</span>
+                  )}
                 </button>
               ))}
             </div>

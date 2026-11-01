@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { usePathname } from 'next/navigation';
 import { X, Bot, ChevronRight, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,7 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+// NavLink uses usePathname — must be inside <Suspense>
 function NavLink({ item, depth = 0, onClose }: { item: NavItem; depth?: number; onClose: () => void }) {
   const pathname = usePathname();
   const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
@@ -50,45 +52,79 @@ function NavLink({ item, depth = 0, onClose }: { item: NavItem; depth?: number; 
         )}
         {item.children && <ChevronRight className="w-3 h-3 text-gray-600" />}
       </Link>
-      {item.children && isActive && (
-        <ul className="mt-1 space-y-1">
-          {item.children.map(child => (
-            <NavLink key={child.href} item={child} depth={depth + 1} onClose={onClose} />
-          ))}
-        </ul>
+      {item.children && (
+        <Suspense>
+          <NavLinkChildren item={item} onClose={onClose} depth={depth} />
+        </Suspense>
       )}
     </li>
   );
 }
 
+// Separate component for children so each level has its own Suspense boundary
+function NavLinkChildren({ item, depth, onClose }: { item: NavItem; depth: number; onClose: () => void }) {
+  const pathname = usePathname();
+  const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
+  if (!isActive || !item.children) return null;
+  return (
+    <ul className="mt-1 space-y-1">
+      {item.children.map(child => (
+        <Suspense key={child.href}>
+          <NavLink item={child} depth={depth + 1} onClose={onClose} />
+        </Suspense>
+      ))}
+    </ul>
+  );
+}
+
+// Static nav item (no pathname — used as fallback inside Suspense)
+function StaticNavItem({ item, depth = 0 }: { item: NavItem; depth?: number }) {
+  const Icon = item.icon;
+  return (
+    <li>
+      <span className={cn(
+        'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400',
+        depth > 0 && 'ml-6 text-xs',
+      )}>
+        <Icon className="w-4 h-4 flex-shrink-0 text-gray-500" />
+        <span className="flex-1 truncate">{item.label}</span>
+        {item.badge && (
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-600 text-white min-w-[18px] text-center">
+            {item.badge}
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}
+
 const ROLE_DISPLAY: Record<string, string> = {
-  SUPER_ADMIN:       'Super Admin',
-  DISTRICT_ADMIN:    'District Admin',
-  HEAD_JUDGE:        'Head Judge',
-  JUDGE:             'Judge / Referee',
-  VENUE_COORDINATOR: 'Venue Coordinator',
-  CHECKIN_VOLUNTEER: 'Check-in Volunteer',
-  SCHOOL_COORDINATOR:'School Coordinator',
-  PUBLIC_VIEWER:     'Viewer',
+  SUPER_ADMIN:        'Super Admin',
+  DISTRICT_ADMIN:     'District Admin',
+  HEAD_JUDGE:         'Head Judge',
+  JUDGE:              'Judge / Referee',
+  VENUE_COORDINATOR:  'Venue Coordinator',
+  CHECKIN_VOLUNTEER:  'Check-in Volunteer',
+  SCHOOL_COORDINATOR: 'School Coordinator',
+  PUBLIC_VIEWER:      'Viewer',
 };
 
 const ROLE_COLOR: Record<string, string> = {
-  SUPER_ADMIN:       'text-red-400',
-  DISTRICT_ADMIN:    'text-orange-400',
-  HEAD_JUDGE:        'text-purple-400',
-  JUDGE:             'text-purple-400',
-  VENUE_COORDINATOR: 'text-green-400',
-  CHECKIN_VOLUNTEER: 'text-green-400',
-  SCHOOL_COORDINATOR:'text-blue-400',
-  PUBLIC_VIEWER:     'text-gray-400',
+  SUPER_ADMIN:        'text-red-400',
+  DISTRICT_ADMIN:     'text-orange-400',
+  HEAD_JUDGE:         'text-purple-400',
+  JUDGE:              'text-purple-400',
+  VENUE_COORDINATOR:  'text-green-400',
+  CHECKIN_VOLUNTEER:  'text-green-400',
+  SCHOOL_COORDINATOR: 'text-blue-400',
+  PUBLIC_VIEWER:      'text-gray-400',
 };
 
 export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarProps) {
   const { primaryRole, profile, signOut } = useAuth();
 
-  // Use live role from auth if available, fall back to prop
-  const liveRole   = primaryRole ? (ROLE_DISPLAY[primaryRole] ?? roleLabel) : roleLabel;
-  const liveColor  = primaryRole ? (ROLE_COLOR[primaryRole]   ?? roleColor) : roleColor;
+  const liveRole  = primaryRole ? (ROLE_DISPLAY[primaryRole] ?? roleLabel) : roleLabel;
+  const liveColor = primaryRole ? (ROLE_COLOR[primaryRole]   ?? roleColor) : roleColor;
   const displayName = profile?.displayName ?? profile?.email ?? '';
 
   return (
@@ -128,11 +164,13 @@ export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarP
           </button>
         </div>
 
-        {/* Navigation */}
+        {/* Navigation — each NavLink wrapped in its own Suspense */}
         <nav className="flex-1 overflow-y-auto py-4 px-3">
           <ul className="space-y-1">
             {items.map(item => (
-              <NavLink key={item.href} item={item} onClose={onClose} />
+              <Suspense key={item.href} fallback={<StaticNavItem item={item} />}>
+                <NavLink item={item} onClose={onClose} />
+              </Suspense>
             ))}
           </ul>
         </nav>

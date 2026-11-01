@@ -1,10 +1,10 @@
-﻿'use client';
+'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
-  LayoutDashboard, QrCode, Users, UserCheck, CalendarDays, Shuffle,
+  LayoutDashboard, QrCode, UserCheck, CalendarDays, Shuffle,
   CreditCard, ClipboardList, Activity, History
 } from 'lucide-react';
 import { usePathname } from 'next/navigation';
@@ -24,13 +24,17 @@ const VENUE_NAV: NavItem[] = [
 ];
 
 function getTitle(pathname: string): string {
-  const found = VENUE_NAV.find(n => n.href === pathname);
+  const found = VENUE_NAV.find(n => n.href === pathname || pathname.startsWith(n.href + '/'));
   return found ? found.label : 'Venue Coordinator';
+}
+
+function VenueHeader({ onMenuClick }: { onMenuClick: () => void }) {
+  const pathname = usePathname();
+  return <Header title={getTitle(pathname)} onMenuClick={onMenuClick} />;
 }
 
 export default function VenueLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const pathname = usePathname();
 
   return (
     <RouteGuard allowedRoles={['VENUE_COORDINATOR', 'CHECKIN_VOLUNTEER', 'DISTRICT_ADMIN', 'SUPER_ADMIN']}>
@@ -43,7 +47,9 @@ export default function VenueLayout({ children }: { children: React.ReactNode })
           onClose={() => setSidebarOpen(false)}
         />
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
+          <Suspense fallback={<Header title="Venue Coordinator" onMenuClick={() => setSidebarOpen(true)} />}>
+            <VenueHeader onMenuClick={() => setSidebarOpen(true)} />
+          </Suspense>
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             {children}
           </main>

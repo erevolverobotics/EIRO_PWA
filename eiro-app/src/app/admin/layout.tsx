@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
@@ -34,13 +34,17 @@ const ADMIN_NAV: NavItem[] = [
 ];
 
 function getTitle(pathname: string): string {
-  const found = ADMIN_NAV.find(n => n.href === pathname);
+  const found = ADMIN_NAV.find(n => n.href === pathname || pathname.startsWith(n.href + '/'));
   return found ? found.label : 'Admin Dashboard';
+}
+
+function AdminHeader({ onMenuClick }: { onMenuClick: () => void }) {
+  const pathname = usePathname();
+  return <Header title={getTitle(pathname)} onMenuClick={onMenuClick} />;
 }
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const pathname = usePathname();
 
   return (
     <RouteGuard allowedRoles={['SUPER_ADMIN', 'DISTRICT_ADMIN']}>
@@ -53,7 +57,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           onClose={() => setSidebarOpen(false)}
         />
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
+          <Suspense fallback={<Header title="Admin Dashboard" onMenuClick={() => setSidebarOpen(true)} />}>
+            <AdminHeader onMenuClick={() => setSidebarOpen(true)} />
+          </Suspense>
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             {children}
           </main>
