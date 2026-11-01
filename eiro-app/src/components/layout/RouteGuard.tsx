@@ -36,7 +36,7 @@ export function RouteGuard({ allowedRoles, children }: RouteGuardProps) {
 
       {/* Gate overlay */}
       {showGate && (
-        <div className="fixed inset-0 z-50 bg-[#0a0f1e] flex flex-col items-center justify-center gap-4 px-4">
+        <div className="fixed inset-0 z-50 animated-bg flex flex-col items-center justify-center gap-4 px-4">
           {(loading || !user) ? (
             /* Loading / unauthenticated spinner */
             <>

@@ -1450,6 +1450,3 @@ export default function RegisterTeamPage() {
     </main>
   );
 }
-
-
-

@@ -43,7 +43,7 @@ export default function JudgeLayout({ children }: { children: React.ReactNode })
 
   return (
     <RouteGuard allowedRoles={['JUDGE', 'HEAD_JUDGE', 'DISTRICT_ADMIN', 'SUPER_ADMIN']}>
-      <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
+      <div className="flex h-screen overflow-hidden animated-bg">
         <Sidebar
           items={navItems}
           roleLabel="Judge / Referee"

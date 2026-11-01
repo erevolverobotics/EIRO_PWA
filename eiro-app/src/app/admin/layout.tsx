@@ -48,7 +48,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <RouteGuard allowedRoles={['SUPER_ADMIN', 'DISTRICT_ADMIN']}>
-      <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
+      <div className="flex h-screen overflow-hidden animated-bg">
         <Sidebar
           items={ADMIN_NAV}
           roleLabel="Super Admin"
