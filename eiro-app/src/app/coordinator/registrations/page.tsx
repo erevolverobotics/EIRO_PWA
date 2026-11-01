@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { PageHeader, Card, Button, StatusBadge, CategoryBadge, Modal } from '@/components/ui';
-import { Plus, ChevronDown, ChevronUp, Users } from 'lucide-react';
+import { Plus, ChevronDown, ChevronUp, Users, Pencil } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/firebase/auth-context';
 import { queryByField } from '@/lib/firebase/firestore';
@@ -212,6 +212,14 @@ export default function RegistrationsPage() {
                       >
                         {isExpanded ? 'Hide' : 'Members'}
                       </Button>
+                    )}
+                    {/* Edit button — only for CORRECTION_REQUIRED */}
+                    {registration.state === 'CORRECTION_REQUIRED' && (
+                      <Link href={`/coordinator/registrations/${registration.id}/edit`}>
+                        <Button size="sm" icon={Pencil} variant="primary">
+                          Fix &amp; Resubmit
+                        </Button>
+                      </Link>
                     )}
                   </div>
                 </div>

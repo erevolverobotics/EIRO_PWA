@@ -140,10 +140,13 @@ export function Sidebar({ items, roleLabel, roleColor, open, onClose }: SidebarP
         {/* User identity + sign-out footer */}
         <div className="p-3 border-t border-white/5 space-y-2">
           {displayName && (
-            <div className="px-2 py-1.5 rounded-lg bg-white/[0.03] border border-white/5">
-              <p className="text-[11px] font-medium text-white truncate">{displayName}</p>
+            <Link href="/profile"
+              className="block px-2 py-1.5 rounded-lg bg-white/[0.03] border border-white/5 hover:bg-white/[0.07] hover:border-white/10 transition-all group"
+              title="View profile"
+            >
+              <p className="text-[11px] font-medium text-white truncate group-hover:text-indigo-300 transition-colors">{displayName}</p>
               <p className={cn('text-[10px] truncate', liveColor)}>{liveRole}</p>
-            </div>
+            </Link>
           )}
           <button
             onClick={() => signOut()}
