@@ -38,7 +38,7 @@ export default function VenueLayout({ children }: { children: React.ReactNode })
 
   return (
     <RouteGuard allowedRoles={['VENUE_COORDINATOR', 'CHECKIN_VOLUNTEER', 'DISTRICT_ADMIN', 'SUPER_ADMIN']}>
-      <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
+      <div className="flex h-screen overflow-hidden animated-bg">
         <Sidebar
           items={VENUE_NAV}
           roleLabel="Venue Coordinator"

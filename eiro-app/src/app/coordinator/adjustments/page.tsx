@@ -30,6 +30,16 @@ interface AdjustmentRequest {
 
 type RequestType = 'MERGE_TEAMS' | 'TRANSFER_MEMBERS';
 
+const ADJ_AMBIENT_BUBBLES = [
+  { left: '7%', size: 42, duration: 25, delay: -5, tone: 'violet' },
+  { left: '19%', size: 22, duration: 19, delay: -12, tone: 'rose' },
+  { left: '34%', size: 58, duration: 30, delay: -18, tone: 'violet' },
+  { left: '51%', size: 30, duration: 23, delay: -8, tone: 'rose' },
+  { left: '68%', size: 48, duration: 28, delay: -16, tone: 'violet' },
+  { left: '83%', size: 26, duration: 21, delay: -10, tone: 'rose' },
+  { left: '94%', size: 54, duration: 32, delay: -22, tone: 'violet' },
+];
+
 export default function CoordinatorAdjustmentsPage() {
   const { user, roles } = useAuth();
   const schoolId = roles.find(role => role.role === 'SCHOOL_COORDINATOR' && role.active)?.scopeId;
@@ -67,7 +77,10 @@ export default function CoordinatorAdjustmentsPage() {
 
   const teamOptions = useMemo(() => [
     { value: '', label: '— Select team —' },
-    ...teams.map(team => ({ value: team.id, label: `${team.teamName || team.displayTeamCode || team.id}${team.displayTeamCode ? ` (${team.displayTeamCode})` : ''}` })),
+    ...teams.map(team => ({
+      value: team.id,
+      label: `${team.teamName || team.displayTeamCode || team.id}${team.displayTeamCode ? ` (${team.displayTeamCode})` : ''}`
+    })),
   ], [teams]);
 
   const submit = async () => {
@@ -118,71 +131,364 @@ export default function CoordinatorAdjustmentsPage() {
   };
 
   return (
-    <div className="max-w-2xl space-y-6 animate-fade-in-up">
-      <PageHeader title="Transfer / Merge Request" subtitle="Request a roster change for teams belonging to your assigned school" actions={<Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => void load()} disabled={loading}>Refresh</Button>} />
+    <main className="adj-page relative isolate min-h-screen w-full">
 
-      <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex items-start gap-3">
-        <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-        <div className="text-xs text-yellow-400 space-y-1">
-          <p><strong>Requests require review.</strong> Sending a request does not change a roster; an authorized reviewer must approve it.</p>
-          <p>Backend validation must check event scope, student membership, event status and cross-school permissions.</p>
-        </div>
+      {/* Animated background - no grid pattern */}
+      <div className="adj-background" aria-hidden="true">
+        <div className="adj-orb adj-orb-one" />
+        <div className="adj-orb adj-orb-two" />
+        <div className="adj-orb adj-orb-three" />
+
+        {ADJ_AMBIENT_BUBBLES.map((bubble, index) => (
+          <span
+            key={index}
+            className={`adj-bubble adj-bubble-${bubble.tone}`}
+            style={{
+              left: bubble.left,
+              width: `${bubble.size}px`,
+              height: `${bubble.size}px`,
+              animationDuration: `${bubble.duration}s`,
+              animationDelay: `${bubble.delay}s`,
+            }}
+          />
+        ))}
       </div>
 
-      {!schoolId || schoolId === 'unassigned' ? (
-        <Card className="flex items-start gap-3"><Info className="w-5 h-5 text-blue-400 mt-0.5" /><div><p className="font-medium text-white">School scope not assigned</p><p className="text-sm text-gray-400 mt-1">Ask an administrator to assign this account to a school before creating or viewing scoped requests.</p></div></Card>
-      ) : error && teams.length === 0 && requests.length === 0 ? (
-        <div role="alert"><Card className="text-sm text-red-300">{error}</Card></div>
-      ) : loading ? (
-        <Card className="text-center text-gray-400">Loading teams and requests…</Card>
-      ) : (
-        <>
-          {success && <div role="status"><Card className="flex items-center gap-3 text-green-300"><CheckCircle2 className="w-5 h-5" />Request sent for authorized review.</Card></div>}
-          {error && <div role="alert"><Card className="text-sm text-red-300">{error}</Card></div>}
-          {teams.length === 0 ? (
-            <Card className="text-center py-10"><p className="font-medium text-gray-300">No teams found for this school</p><p className="text-sm text-gray-500 mt-2">Requests can be started after teams are registered.</p></Card>
-          ) : (
-            <Card>
-              <div className="flex gap-3 mb-5">
-                {(['MERGE_TEAMS', 'TRANSFER_MEMBERS'] as const).map(requestType => (
-                  <button key={requestType} type="button" onClick={() => { setType(requestType); setError(''); }}
-                    className={`flex-1 p-4 rounded-xl border text-left ${type === requestType ? 'border-indigo-500 bg-indigo-600/10' : 'border-white/10 bg-white/[0.03]'}`}>
-                    <Shuffle className={`w-5 h-5 mb-2 ${type === requestType ? 'text-indigo-400' : 'text-gray-500'}`} />
-                    <span className="block font-semibold text-white text-sm">{requestType === 'MERGE_TEAMS' ? 'Team merge' : 'Member transfer'}</span>
-                    <span className="block text-xs text-gray-500 mt-1">{requestType === 'MERGE_TEAMS' ? 'Request review of two team entries' : 'Request moving listed students between teams'}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="space-y-4">
-                <Select label="Source team" id="source-team" value={form.sourceTeamId} onChange={event => setForm(current => ({ ...current, sourceTeamId: event.target.value }))} options={teamOptions} />
-                <Select label="Target team" id="target-team" value={form.targetTeamId} onChange={event => setForm(current => ({ ...current, targetTeamId: event.target.value }))} options={teamOptions} />
-                {type === 'TRANSFER_MEMBERS' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1.5" htmlFor="student-ids">Student document ID(s)</label>
-                    <input id="student-ids" className="eiro-input" value={form.studentIds} onChange={event => setForm(current => ({ ...current, studentIds: event.target.value }))} placeholder="Paste student IDs, separated by commas" />
-                    <p className="text-xs text-gray-500 mt-1">Student-to-team membership is not readable under the current school rules; the callable must verify membership before accepting this request.</p>
-                  </div>
-                )}
-                <Textarea label="Reason" id="adjustment-reason" rows={3} value={form.reason} onChange={event => setForm(current => ({ ...current, reason: event.target.value }))} placeholder="Explain why the roster adjustment is requested…" />
-                <Button icon={Shuffle} className="w-full" onClick={() => void submit()} loading={submitting}>Submit for review</Button>
-              </div>
-            </Card>
-          )}
-          <Card>
-            <h2 className="font-semibold text-white mb-3">Your requests</h2>
-            {requests.length === 0 ? <p className="text-sm text-gray-500">No adjustment requests have been submitted.</p> : (
-              <div className="divide-y divide-white/5">
-                {requests.map(request => (
-                  <div key={request.id} className="py-3 flex flex-wrap items-center justify-between gap-2">
-                    <div><p className="text-sm text-white">{request.type === 'MERGE_TEAMS' ? 'Team merge' : request.type === 'TRANSFER_MEMBERS' ? 'Member transfer' : request.type || 'Adjustment'} · {request.id}</p><p className="text-xs text-gray-500 mt-1">{request.reason || 'No reason recorded'}</p></div>
-                    <Badge variant={request.status === 'APPROVED' || request.status === 'APPLIED' ? 'success' : request.status === 'REJECTED' ? 'danger' : 'warning'}>{request.status || 'PENDING'}</Badge>
-                  </div>
-                ))}
+      {/* Full-width page content */}
+      <div className="adj-content relative z-10 w-full space-y-6 animate-fade-in-up">
+
+        <PageHeader
+          title="Transfer / Merge Request"
+          subtitle="Request a roster change for teams belonging to your assigned school"
+          actions={
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={RefreshCw}
+              onClick={() => void load()}
+              disabled={loading}
+            >
+              Refresh
+            </Button>
+          }
+        />
+
+        <div className="p-4 rounded-2xl bg-yellow-900/20 border border-yellow-500/20 flex items-start gap-3">
+          <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-yellow-400 space-y-1">
+            <p><strong>Requests require review.</strong> Sending a request does not change a roster; an authorized reviewer must approve it.</p>
+            <p>Backend validation must check event scope, student membership, event status and cross-school permissions.</p>
+          </div>
+        </div>
+
+        {!schoolId || schoolId === 'unassigned' ? (
+          <Card className="adj-glass-card flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-400 mt-0.5" />
+            <div>
+              <p className="font-medium text-white">School scope not assigned</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Ask an administrator to assign this account to a school before creating or viewing scoped requests.
+              </p>
+            </div>
+          </Card>
+        ) : error && teams.length === 0 && requests.length === 0 ? (
+          <div role="alert">
+            <Card className="adj-glass-card text-sm text-red-300">{error}</Card>
+          </div>
+        ) : loading ? (
+          <Card className="adj-glass-card text-center text-gray-400">
+            Loading teams and requests…
+          </Card>
+        ) : (
+          <>
+            {success && (
+              <div role="status">
+                <Card className="adj-glass-card flex items-center gap-3 text-green-300">
+                  <CheckCircle2 className="w-5 h-5" />
+                  Request sent for authorized review.
+                </Card>
               </div>
             )}
-          </Card>
-        </>
-      )}
-    </div>
+
+            {error && (
+              <div role="alert">
+                <Card className="adj-glass-card text-sm text-red-300">{error}</Card>
+              </div>
+            )}
+
+            {teams.length === 0 ? (
+              <Card className="adj-glass-card text-center py-10">
+                <p className="font-medium text-gray-300">No teams found for this school</p>
+                <p className="text-sm text-gray-500 mt-2">
+                  Requests can be started after teams are registered.
+                </p>
+              </Card>
+            ) : (
+              <Card className="adj-glass-card">
+                <div className="flex gap-3 mb-5">
+                  {(['MERGE_TEAMS', 'TRANSFER_MEMBERS'] as const).map(requestType => (
+                    <button
+                      key={requestType}
+                      type="button"
+                      onClick={() => {
+                        setType(requestType);
+                        setError('');
+                      }}
+                      className={`flex-1 p-4 rounded-xl border text-left ${
+                        type === requestType
+                          ? 'border-indigo-500 bg-indigo-600/10'
+                          : 'border-white/10 bg-white/[0.03]'
+                      }`}
+                    >
+                      <Shuffle className={`w-5 h-5 mb-2 ${type === requestType ? 'text-indigo-400' : 'text-gray-500'}`} />
+                      <span className="block font-semibold text-white text-sm">
+                        {requestType === 'MERGE_TEAMS' ? 'Team merge' : 'Member transfer'}
+                      </span>
+                      <span className="block text-xs text-gray-500 mt-1">
+                        {requestType === 'MERGE_TEAMS'
+                          ? 'Request review of two team entries'
+                          : 'Request moving listed students between teams'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-4">
+                  <Select
+                    label="Source team"
+                    id="source-team"
+                    value={form.sourceTeamId}
+                    onChange={event => setForm(current => ({ ...current, sourceTeamId: event.target.value }))}
+                    options={teamOptions}
+                  />
+
+                  <Select
+                    label="Target team"
+                    id="target-team"
+                    value={form.targetTeamId}
+                    onChange={event => setForm(current => ({ ...current, targetTeamId: event.target.value }))}
+                    options={teamOptions}
+                  />
+
+                  {type === 'TRANSFER_MEMBERS' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-1.5" htmlFor="student-ids">
+                        Student document ID(s)
+                      </label>
+                      <input
+                        id="student-ids"
+                        className="eiro-input"
+                        value={form.studentIds}
+                        onChange={event => setForm(current => ({ ...current, studentIds: event.target.value }))}
+                        placeholder="Paste student IDs, separated by commas"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Student-to-team membership is not readable under the current school rules; the callable must verify membership before accepting this request.
+                      </p>
+                    </div>
+                  )}
+
+                  <Textarea
+                    label="Reason"
+                    id="adjustment-reason"
+                    rows={3}
+                    value={form.reason}
+                    onChange={event => setForm(current => ({ ...current, reason: event.target.value }))}
+                    placeholder="Explain why the roster adjustment is requested…"
+                  />
+
+                  <Button
+                    icon={Shuffle}
+                    className="w-full"
+                    onClick={() => void submit()}
+                    loading={submitting}
+                  >
+                    Submit for review
+                  </Button>
+                </div>
+              </Card>
+            )}
+
+            <Card className="adj-glass-card">
+              <h2 className="font-semibold text-white mb-3">Your requests</h2>
+
+              {requests.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No adjustment requests have been submitted.
+                </p>
+              ) : (
+                <div className="divide-y divide-white/5">
+                  {requests.map(request => (
+                    <div
+                      key={request.id}
+                      className="py-3 flex flex-wrap items-center justify-between gap-2"
+                    >
+                      <div>
+                        <p className="text-sm text-white">
+                          {request.type === 'MERGE_TEAMS'
+                            ? 'Team merge'
+                            : request.type === 'TRANSFER_MEMBERS'
+                              ? 'Member transfer'
+                              : request.type || 'Adjustment'} · {request.id}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {request.reason || 'No reason recorded'}
+                        </p>
+                      </div>
+
+                      <Badge
+                        variant={
+                          request.status === 'APPROVED' || request.status === 'APPLIED'
+                            ? 'success'
+                            : request.status === 'REJECTED'
+                              ? 'danger'
+                              : 'warning'
+                        }
+                      >
+                        {request.status || 'PENDING'}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+
+      {/* Background styling */}
+      <style jsx global>{`
+        .adj-page {
+          width: 100%;
+          min-height: 100vh;
+          isolation: isolate;
+        }
+
+        .adj-background {
+          position: fixed;
+          inset: 0;
+          z-index: 0;
+          overflow: hidden;
+          pointer-events: none;
+          background: transparent;
+        }
+
+        .adj-orb {
+          position: absolute;
+          width: 520px;
+          height: 520px;
+          border-radius: 50%;
+          filter: blur(110px);
+          opacity: 0.12;
+        }
+
+        .adj-orb-one {
+          top: -220px;
+          left: -180px;
+          background: #7c3aed;
+        }
+
+        .adj-orb-two {
+          top: 25%;
+          right: -260px;
+          background: #b24bb2;
+        }
+
+        .adj-orb-three {
+          bottom: -300px;
+          left: 35%;
+          background: #7c3aed;
+          opacity: 0.08;
+        }
+
+        .adj-bubble {
+          position: absolute;
+          bottom: -90px;
+          display: block;
+          border-radius: 50%;
+          opacity: 0;
+          filter: blur(1px);
+          animation-name: adj-float-up;
+          animation-timing-function: linear;
+          animation-iteration-count: infinite;
+        }
+
+        .adj-bubble-violet {
+          background: radial-gradient(
+            circle at 35% 35%,
+            rgba(168, 85, 247, 0.2),
+            rgba(168, 85, 247, 0.04) 65%,
+            transparent 100%
+          );
+          border: 1px solid rgba(168, 85, 247, 0.12);
+        }
+
+        .adj-bubble-rose {
+          background: radial-gradient(
+            circle at 35% 35%,
+            rgba(221, 143, 224, 0.16),
+            rgba(221, 143, 224, 0.03) 65%,
+            transparent 100%
+          );
+          border: 1px solid rgba(221, 143, 224, 0.12);
+        }
+
+        @keyframes adj-float-up {
+          0% {
+            transform: translateY(0) scale(0.8);
+            opacity: 0;
+          }
+
+          12% {
+            opacity: 0.5;
+          }
+
+          88% {
+            opacity: 0.3;
+          }
+
+          100% {
+            transform: translateY(-115vh) scale(1.12);
+            opacity: 0;
+          }
+        }
+
+        .adj-content {
+          width: 100%;
+          max-width: none !important;
+          padding: 16px;
+          margin: 0;
+        }
+
+        .adj-glass-card {
+          background: rgba(17, 24, 39, 0.30) !important;
+          border: 1px solid rgba(148, 163, 184, 0.18) !important;
+          border-radius: 16px !important;
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          box-shadow: none !important;
+        }
+
+        @media (min-width: 768px) {
+          .adj-content {
+            padding: 24px;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .adj-bubble {
+            animation: none !important;
+            display: none;
+          }
+
+          .adj-page *,
+          .adj-page *::before,
+          .adj-page *::after {
+            scroll-behavior: auto !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
+      `}</style>
+    </main>
   );
 }

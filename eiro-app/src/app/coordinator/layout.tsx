@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { useState } from 'react';
 import { Sidebar, type NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import {
@@ -26,25 +26,17 @@ const COORDINATOR_NAV: NavItem[] = [
 ];
 
 function getTitle(pathname: string): string {
-  // Match exact or parent path (handles dynamic routes like /registrations/[id]/edit)
-  const found = COORDINATOR_NAV.find(n =>
-    n.href === pathname || pathname.startsWith(n.href + '/')
-  );
+  const found = COORDINATOR_NAV.find(n => n.href === pathname);
   return found ? found.label : 'School Coordinator';
-}
-
-// Isolated so usePathname is inside <Suspense>
-function CoordinatorHeader({ onMenuClick }: { onMenuClick: () => void }) {
-  const pathname = usePathname();
-  return <Header title={getTitle(pathname)} onMenuClick={onMenuClick} />;
 }
 
 export default function CoordinatorLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const pathname = usePathname();
 
   return (
     <RouteGuard allowedRoles={['SCHOOL_COORDINATOR', 'DISTRICT_ADMIN', 'SUPER_ADMIN']}>
-      <div className="flex h-screen overflow-hidden bg-[#0a0f1e]">
+      <div className="flex h-screen overflow-hidden animated-bg">
         <Sidebar
           items={COORDINATOR_NAV}
           roleLabel="School Coordinator"
@@ -53,9 +45,7 @@ export default function CoordinatorLayout({ children }: { children: React.ReactN
           onClose={() => setSidebarOpen(false)}
         />
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Suspense fallback={<Header title="School Coordinator" onMenuClick={() => setSidebarOpen(true)} />}>
-            <CoordinatorHeader onMenuClick={() => setSidebarOpen(true)} />
-          </Suspense>
+          <Header title={getTitle(pathname)} onMenuClick={() => setSidebarOpen(true)} />
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             {children}
           </main>

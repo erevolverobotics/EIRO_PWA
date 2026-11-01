@@ -94,7 +94,7 @@ export function Card({ children, className, hover, glow, padding = 'md' }: CardP
   return (
     <div className={cn(
       'rounded-2xl border border-white/5 transition-all duration-300',
-      'bg-[#111827]',
+      'bg-[rgba(18,10,25,0.62)] backdrop-blur-xl border-white/10',
       hover && 'hover:border-indigo-500/30 hover:scale-[1.01] cursor-pointer',
       glow && 'glow-accent',
       {
