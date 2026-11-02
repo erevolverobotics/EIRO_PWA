@@ -160,7 +160,7 @@ export default function LoginPage() {
           >
             <div className="eiro-logo relative mb-3 flex h-[82px] w-[82px] items-center justify-center overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.06)] shadow-[0_10px_40px_rgba(178,75,178,0.18)] backdrop-blur-xl transition-transform duration-300 group-hover:-translate-y-1">
               <Image
-                src="/images/eiro-logo.png"
+                src="IMAGES/image-removebg-preview (8).png"
                 alt="EIRO Robotics logo"
                 width={76}
                 height={76}
